@@ -8,7 +8,8 @@ from .views import (
     StartQuizView,
     SubmitQuizView,
     QuizDetailView,
-    QuizResultView,  # ✅ ADD THIS
+    QuizResultView,
+    StudentQuizSubjectsView,
 )
 
 urlpatterns = [
@@ -66,5 +67,10 @@ urlpatterns = [
         "quizzes/<uuid:pk>/result/",
         QuizResultView.as_view(),
         name="quiz-result",
+    ),
+    path(
+        "student/quiz-subjects/",
+        StudentQuizSubjectsView.as_view(),
+        name="student-quiz-subjects",
     ),
 ]

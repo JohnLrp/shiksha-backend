@@ -312,3 +312,47 @@ class QuizResultView(APIView):
 
         serializer = QuizResultSerializer(data)
         return Response(serializer.data)
+
+
+class StudentQuizSubjectsView(APIView):
+    permission_classes = [
+        IsAuthenticated,
+        IsEmailVerified,
+    ]
+
+    def get(self, request):
+        subjects = (
+            Quiz.objects
+            .filter(
+                is_published=True,
+                subject__course__enrollments__user=request.user,
+                subject__course__enrollments__status=Enrollment.STATUS_ACTIVE,
+            )
+            .select_related(
+                "subject",
+                "subject__course",
+                "created_by",
+                "created_by__profile",
+            )
+            .distinct("subject")
+        )
+
+        data = []
+
+        seen_subjects = set()
+
+        for quiz in subjects:
+            subject = quiz.subject
+
+            if subject.id in seen_subjects:
+                continue
+
+            seen_subjects.add(subject.id)
+
+            data.append({
+                "id": subject.id,
+                "subject": subject.name,
+                "teacher": quiz.created_by.profile.full_name,
+            })
+
+        return Response(data)
