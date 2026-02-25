@@ -5,38 +5,7 @@ from django.utils import timezone
 
 
 # -------------------------------------------------------
-# 1️⃣ SUBJECT TEACHER ASSIGNMENT
-# -------------------------------------------------------
-
-class SubjectTeacher(models.Model):
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-
-    subject = models.ForeignKey(
-        "courses.Subject",
-        on_delete=models.CASCADE,
-        related_name="assigned_teachers",
-    )
-
-    teacher = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
-        related_name="teaching_subjects",
-    )
-
-    assigned_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        unique_together = ("subject", "teacher")
-        indexes = [
-            models.Index(fields=["subject", "teacher"]),
-        ]
-
-    def __str__(self):
-        return f"{self.teacher.email} → {self.subject.name}"
-
-
-# -------------------------------------------------------
-# 2️⃣ QUIZ
+# 1️⃣ QUIZ
 # -------------------------------------------------------
 
 class Quiz(models.Model):
@@ -80,7 +49,7 @@ class Quiz(models.Model):
 
 
 # -------------------------------------------------------
-# 3️⃣ QUESTION (Single Correct Only)
+# 2️⃣ QUESTION
 # -------------------------------------------------------
 
 class Question(models.Model):
@@ -94,7 +63,6 @@ class Question(models.Model):
 
     text = models.TextField()
     marks = models.PositiveIntegerField(default=1)
-
     order = models.PositiveIntegerField(default=0)
 
     created_at = models.DateTimeField(auto_now_add=True)
@@ -110,7 +78,7 @@ class Question(models.Model):
 
 
 # -------------------------------------------------------
-# 4️⃣ CHOICE
+# 3️⃣ CHOICE
 # -------------------------------------------------------
 
 class Choice(models.Model):
@@ -123,7 +91,6 @@ class Choice(models.Model):
     )
 
     text = models.CharField(max_length=500)
-
     is_correct = models.BooleanField(default=False)
 
     def __str__(self):
@@ -131,7 +98,7 @@ class Choice(models.Model):
 
 
 # -------------------------------------------------------
-# 5️⃣ QUIZ ATTEMPT (ONE PER STUDENT)
+# 4️⃣ QUIZ ATTEMPT
 # -------------------------------------------------------
 
 class QuizAttempt(models.Model):
@@ -179,7 +146,7 @@ class QuizAttempt(models.Model):
 
 
 # -------------------------------------------------------
-# 6️⃣ STUDENT ANSWER
+# 5️⃣ STUDENT ANSWER
 # -------------------------------------------------------
 
 class StudentAnswer(models.Model):
