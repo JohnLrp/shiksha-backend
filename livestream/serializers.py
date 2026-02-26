@@ -91,3 +91,47 @@ class LiveSessionCreateSerializer(serializers.ModelSerializer):
             created_by=user,
             **validated_data
         )
+
+
+class LiveSessionListSerializer(serializers.ModelSerializer):
+    teacher = serializers.CharField(source="created_by.email", read_only=True)
+    can_join = serializers.SerializerMethodField()
+    computed_status = serializers.SerializerMethodField()
+
+    class Meta:
+        model = LiveSession
+        fields = [
+            "id",
+            "title",
+            "start_time",
+            "end_time",
+            "computed_status",
+            "teacher",
+            "can_join",
+        ]
+
+    def get_computed_status(self, obj):
+        now = timezone.now()
+
+        if obj.status == LiveSession.STATUS_CANCELLED:
+            return "CANCELLED"
+
+        if now < obj.start_time:
+            return "SCHEDULED"
+
+        if obj.start_time <= now <= obj.end_time:
+            return "LIVE"
+
+        return "COMPLETED"
+
+    def get_can_join(self, obj):
+        now = timezone.now()
+
+        if obj.status == LiveSession.STATUS_CANCELLED:
+            return False
+
+        return (
+            obj.start_time - timedelta(minutes=10)
+            <= now
+            <= obj.end_time
+        )
