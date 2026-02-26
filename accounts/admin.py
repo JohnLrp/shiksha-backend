@@ -5,7 +5,7 @@ from courses.models import Course, Subject, Chapter
 from payments.models import Order, Payment
 from enrollments.models import Enrollment
 from assignments.models import Assignment, AssignmentSubmission
-from .models import LiveSession, LiveSessionAttendance
+from livestream.models import LiveSession, LiveSessionAttendance
 
 from quizzes.models import (
     Quiz,
