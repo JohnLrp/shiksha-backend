@@ -141,12 +141,11 @@ class SubjectDashboardView(APIView):
 
         subject = get_object_or_404(
             Subject.objects.prefetch_related(
-                "subject_teachers__teacher__teacher_profile"
+                "subject_teachers__teacher"
             ),
             id=subject_id
         )
 
-        # 🔒 Enrollment check
         if not Enrollment.objects.filter(
             user=user,
             course=subject.course,
@@ -157,9 +156,9 @@ class SubjectDashboardView(APIView):
                 status=status.HTTP_403_FORBIDDEN
             )
 
-        # =====================================
+        # =========================
         # ASSIGNMENTS
-        # =====================================
+        # =========================
 
         assignments = Assignment.objects.filter(
             chapter__subject=subject
@@ -173,9 +172,9 @@ class SubjectDashboardView(APIView):
 
         pending_assignments = total_assignments - completed_assignments
 
-        # =====================================
+        # =========================
         # QUIZZES
-        # =====================================
+        # =========================
 
         quizzes = Quiz.objects.filter(
             subject=subject,
@@ -190,10 +189,6 @@ class SubjectDashboardView(APIView):
         ).distinct().count()
 
         pending_quizzes = total_quizzes - completed_quizzes
-
-        # =====================================
-        # RESPONSE
-        # =====================================
 
         serializer = SubjectSerializer(subject)
 
