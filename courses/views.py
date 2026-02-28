@@ -113,3 +113,18 @@ class CourseSubjectsView(APIView):
 
         serializer = SubjectSerializer(subjects, many=True)
         return Response(serializer.data)
+
+
+class SubjectDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, subject_id):
+        subject = get_object_or_404(
+            Subject.objects.prefetch_related(
+                "subject_teachers__teacher__teacher_profile"
+            ),
+            id=subject_id
+        )
+
+        serializer = SubjectSerializer(subject)
+        return Response(serializer.data)
