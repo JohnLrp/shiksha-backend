@@ -81,7 +81,8 @@ class LiveSessionCreateSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         subject = self._validated_subject
         user = self.context["request"].user
-
+        # Remove subject_id from validated_data
+        validated_data.pop("subject_id", None)
         room_name = f"session_{uuid.uuid4().hex}"
 
         return LiveSession.objects.create(
