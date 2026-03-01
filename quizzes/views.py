@@ -22,7 +22,7 @@ from .serializers import (
     QuizSubmitSerializer,
     QuizDetailSerializer,
     QuizResultSerializer,
-
+    TeacherQuizAnalyticsSerializer,
 
 )
 
