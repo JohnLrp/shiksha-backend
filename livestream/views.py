@@ -136,7 +136,9 @@ def join_live_session(request, session_id):
     except Exception as e:
         logger.exception("LiveKit token generation failed")
         return Response({"detail": "LiveKit error"}, status=500)
-
+    print("DJANGO URL:", settings.LIVEKIT_URL)
+    print("DJANGO KEY:", settings.LIVEKIT_API_KEY)
+    print("DJANGO SECRET:", settings.LIVEKIT_API_SECRET)
     print("KEY:", settings.LIVEKIT_API_KEY)
     print("SECRET:", settings.LIVEKIT_API_SECRET)
     print("URL:", settings.LIVEKIT_URL)
