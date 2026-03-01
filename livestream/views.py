@@ -137,6 +137,9 @@ def join_live_session(request, session_id):
         logger.exception("LiveKit token generation failed")
         return Response({"detail": "LiveKit error"}, status=500)
 
+    print("KEY:", settings.LIVEKIT_API_KEY)
+    print("SECRET:", settings.LIVEKIT_API_SECRET)
+    print("URL:", settings.LIVEKIT_URL)
     return Response({
         "livekit_url": settings.LIVEKIT_URL,
         "token": token,
