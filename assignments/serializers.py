@@ -9,7 +9,6 @@ import os
 # FILE TYPE VALIDATOR
 # ==========================================
 
-# Blocked for security - dangerous executable/script extensions
 BLOCKED_EXTENSIONS = [
     ".exe", ".bat", ".cmd", ".sh", ".bash",
     ".php", ".py", ".rb", ".pl", ".cgi",
@@ -27,14 +26,12 @@ def validate_assignment_file(file):
     if file is None:
         return file
 
-    # Check extension against blocked list
     ext = os.path.splitext(file.name)[1].lower()
     if ext in BLOCKED_EXTENSIONS:
         raise serializers.ValidationError(
             f"File type '{ext}' is not allowed for security reasons."
         )
 
-    # Max file size: 100MB
     max_size = 100 * 1024 * 1024
     if file.size > max_size:
         raise serializers.ValidationError(
@@ -58,7 +55,6 @@ class AssignmentListSerializer(serializers.ModelSerializer):
         source="chapter.subject.course.id",
         read_only=True
     )
-    # ✅ FIX 1: Added attachment so students can see uploaded files
     attachment = serializers.FileField(read_only=True)
 
     class Meta:
@@ -143,7 +139,12 @@ class AssignmentDetailSerializer(serializers.ModelSerializer):
 # ==========================================
 
 class TeacherAssignmentCreateSerializer(serializers.ModelSerializer):
-    chapter_id = serializers.UUIDField(write_only=True)
+
+    chapter_id = serializers.PrimaryKeyRelatedField(
+        queryset=Chapter.objects.all(),
+        source="chapter",
+        write_only=True
+    )
 
     class Meta:
         model = Assignment
@@ -162,27 +163,21 @@ class TeacherAssignmentCreateSerializer(serializers.ModelSerializer):
             )
         return attrs
 
-    def validate_chapter_id(self, value):
-        try:
-            Chapter.objects.select_related(
-                "subject__course"
-            ).get(id=value)
-        except Chapter.DoesNotExist:
-            raise serializers.ValidationError("Invalid chapter.")
-        return value
-
-    # ✅ File type validation on create
     def validate_attachment(self, value):
         return validate_assignment_file(value)
 
-    def create(self, validated_data):
-        chapter_id = validated_data.pop("chapter_id")
-        chapter = Chapter.objects.get(id=chapter_id)
+    # ✅ corrected validator name
+    def validate_chapter(self, chapter):
+        user = self.context["request"].user
 
-        return Assignment.objects.create(
-            chapter=chapter,
-            **validated_data
-        )
+        if not chapter.subject.subject_teachers.filter(
+            teacher=user
+        ).exists():
+            raise serializers.ValidationError(
+                "You are not assigned to this subject."
+            )
+
+        return chapter
 
 
 class TeacherAssignmentUpdateSerializer(serializers.ModelSerializer):
@@ -203,7 +198,6 @@ class TeacherAssignmentUpdateSerializer(serializers.ModelSerializer):
             )
         return value
 
-    # ✅ File type validation on update
     def validate_attachment(self, value):
         return validate_assignment_file(value)
 
@@ -220,7 +214,6 @@ class TeacherAssignmentListSerializer(serializers.ModelSerializer):
         source="is_expired",
         read_only=True
     )
-    # ✅ FIX 2: Added attachment so teacher sees file in response after create/update
     attachment = serializers.FileField(read_only=True)
 
     class Meta:
