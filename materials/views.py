@@ -30,12 +30,9 @@ class UploadStudyMaterial(APIView):
     permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser]
 
-    def post(self, request, chapter_id):
-
-        chapter = get_object_or_404(Chapter, id=chapter_id)
+    def post(self, request):
 
         material = StudyMaterial.objects.create(
-            chapter=chapter,
             title=request.data.get("title"),
             description=request.data.get("description", ""),
             uploaded_by=request.user

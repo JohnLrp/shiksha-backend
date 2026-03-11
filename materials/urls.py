@@ -9,7 +9,7 @@ urlpatterns = [
     ),
 
     path(
-        "chapters/<uuid:chapter_id>/materials/upload/",
+        "materials/upload/",
         UploadStudyMaterial.as_view()
     ),
 ]
