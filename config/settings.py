@@ -56,7 +56,7 @@ INSTALLED_APPS = [
     "payments",
     "assignments",
     "quizzes",
-
+    "materials",
     "django_extensions",
     "livestream.apps.LivestreamConfig",
     "dashboard",
