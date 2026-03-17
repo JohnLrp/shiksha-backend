@@ -1,6 +1,6 @@
 from .models import Quiz
 
-from django.db.models import Avg, Max, Min, Count
+from django.db.models import Avg, Max, Min, Count,Sum
 import uuid
 from django.db import transaction
 from django.utils import timezone
@@ -300,6 +300,7 @@ class QuestionPublicSerializer(serializers.ModelSerializer):
 
 from django.db import models
 
+
 class QuizDetailSerializer(serializers.ModelSerializer):
     subject_name = serializers.CharField(source="subject.name", read_only=True)
     course_title = serializers.CharField(
@@ -316,7 +317,7 @@ class QuizDetailSerializer(serializers.ModelSerializer):
 
     def get_total_marks(self, obj):
         return obj.questions.aggregate(
-            total=models.Sum("marks")
+            total=Sum("marks")
         )["total"] or 0
 
     def get_questions(self, obj):
