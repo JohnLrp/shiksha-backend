@@ -7,8 +7,6 @@ from django.utils import timezone
 from rest_framework import serializers
 from rest_framework.exceptions import ValidationError
 
-
-
 from courses.models import SubjectTeacher
 from enrollments.models import Enrollment
 
@@ -298,21 +296,25 @@ class QuestionPublicSerializer(serializers.ModelSerializer):
         ]
 
 
+<<<<<<< HEAD
 from django.db import models
 
 
+=======
+>>>>>>> 6f6f8234a74279c0f998156eae27ff2595b62db0
 class QuizDetailSerializer(serializers.ModelSerializer):
     subject_name = serializers.CharField(source="subject.name", read_only=True)
     course_title = serializers.CharField(
-        source="subject.course.title", read_only=True
-    )
+        source="subject.course.title", read_only=True)
 
+    # 🔥 FIXED
     teacher_name = serializers.CharField(
         source="created_by.email",
         read_only=True
     )
 
     questions = serializers.SerializerMethodField()
+<<<<<<< HEAD
     total_marks = serializers.SerializerMethodField()
 
     def get_total_marks(self, obj):
@@ -323,6 +325,8 @@ class QuizDetailSerializer(serializers.ModelSerializer):
     def get_questions(self, obj):
         questions = obj.questions.all().order_by("order")
         return QuestionPublicSerializer(questions, many=True).data
+=======
+>>>>>>> 6f6f8234a74279c0f998156eae27ff2595b62db0
 
     class Meta:
         model = Quiz
@@ -337,9 +341,11 @@ class QuizDetailSerializer(serializers.ModelSerializer):
             "created_at",
             "time_limit_minutes",
             "questions",
-            "total_marks",
         ]
-        
+
+    def get_questions(self, obj):
+        questions = obj.questions.all().order_by("order")
+        return QuestionPublicSerializer(questions, many=True).data
 
 
 # =====================================================
@@ -373,14 +379,11 @@ class TeacherQuizAttemptSerializer(serializers.ModelSerializer):
         read_only=True
     )
 
+    total_marks = serializers.IntegerField(
+        source="quiz.total_marks",
+        read_only=True
+    )
 
-
-total_marks = serializers.SerializerMethodField()
-
-def get_total_marks(self, obj):
-    return obj.quiz.questions.aggregate(
-        total=models.Sum("marks")
-    )["total"] or 0
     class Meta:
         model = QuizAttempt
         fields = [
@@ -447,5 +450,6 @@ class TeacherQuizAnalyticsSerializer(serializers.ModelSerializer):
         return obj.due_date <= timezone.now()
     
 
-
+    from rest_framework import serializers
+from .models import QuizAttempt
 
