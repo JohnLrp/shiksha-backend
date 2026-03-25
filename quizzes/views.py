@@ -334,8 +334,8 @@ class StudentQuizSubjectsView(APIView):
 
 
 class TeacherSubjectQuizListView(generics.ListAPIView):
-    permission_classes = [IsAuthenticated]
-    serializer_class = QuizDashboardSerializer
+    serializer_class = TeacherQuizListSerializer
+    permission_classes = [IsAuthenticated, IsEmailVerified]
 
     def get_queryset(self):
         user = self.request.user
@@ -344,18 +344,22 @@ class TeacherSubjectQuizListView(generics.ListAPIView):
         if not user.has_role("TEACHER"):
             raise PermissionDenied("Only teachers allowed.")
 
-        subject = get_object_or_404(Subject, id=subject_id)
+        subject = get_object_or_404(
+            Subject.objects.select_related("course"),
+            id=subject_id
+        )
 
-        if not SubjectTeacher.objects.filter(
-            subject=subject,
+        if not subject.subject_teachers.filter(
             teacher=user
         ).exists():
             raise PermissionDenied("Not assigned to this subject.")
 
-        return Quiz.objects.filter(
-            subject=subject,
-            is_published=True
-        ).order_by("-created_at")
+        return (
+            Quiz.objects
+            .filter(subject=subject)
+            .select_related("created_by")  # 🔥 important
+            .order_by("-created_at")
+        )
 
 
 class TeacherDeleteQuizView(APIView):
@@ -437,9 +441,8 @@ class TeacherDeleteQuizView(APIView):
             status=status.HTTP_204_NO_CONTENT
         )
 
+    from .serializers import TeacherQuizListSerializer
 
-class TeacherSubjectQuizListView(generics.ListAPIView):
-    serializer_class = TeacherQuizAnalyticsSerializer
     permission_classes = [IsAuthenticated, IsEmailVerified]
 
     def get_queryset(self):
