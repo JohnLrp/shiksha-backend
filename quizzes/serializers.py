@@ -148,6 +148,7 @@ class QuizDashboardSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "title",
+            "teacher_name",
             "subject_name",
             "course_title",
             "teacher_name",
