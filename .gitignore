@@ -8,7 +8,8 @@ db.sqlite3
 node_modules/
 .DS_Store
 staticfiles/
-
+credentials.json
+token.json
 #tempjunks
 *.save
 *.swp
