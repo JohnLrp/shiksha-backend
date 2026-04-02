@@ -49,36 +49,69 @@ class SessionRecordingInline(admin.TabularInline):
 @admin.register(Subject)
 class SubjectAdmin(admin.ModelAdmin):
     list_display = ("name", "course", "order", "get_teachers")
-    list_filter = ("course",)
+    list_filter = ("course__board", "course")
     ordering = ("course", "order")
+    autocomplete_fields = ["course"]
     search_fields = ("name", "course__title")
 
     inlines = [
         SubjectTeacherInline,
-        SessionRecordingInline,  # 👈 recordings appear inside subject
+        SessionRecordingInline,
     ]
 
-    def get_teachers(self, obj):
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        return qs.select_related("course__board")   # ✅ FIXED
+
+    def get_teachers(self, obj):   # ✅ RESTORED
         subject_teachers = obj.subject_teachers.select_related("teacher")
         return ", ".join([st.teacher.email for st in subject_teachers])
 
     get_teachers.short_description = "Teachers"
 
-
 # =========================
 # CHAPTER ADMIN
 # =========================
 
+
 @admin.register(Chapter)
 class ChapterAdmin(admin.ModelAdmin):
-    list_display = ("title", "subject", "order")
-    list_filter = ("subject",)
-    ordering = ("subject", "order")
+    list_display = ("title", "subject", "get_course", "get_board", "order")
 
+    list_filter = (
+        "subject__course__board",
+        "subject__course",
+        "subject",
+    )
+
+    search_fields = (
+        "title",
+        "subject__name",
+        "subject__course__title",
+        "subject__course__board__name",
+    )
+
+    ordering = ("subject__course", "subject", "order")
+
+    autocomplete_fields = ["subject"]
+
+    def get_course(self, obj):
+        return obj.subject.course
+
+    def get_board(self, obj):
+        return obj.subject.course.board
+
+    get_course.short_description = "Course"
+    get_board.short_description = "Board"
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        return qs.select_related("subject__course__board")
 
 # =========================
 # SESSION RECORDING ADMIN
 # =========================
+
 
 @admin.register(SessionRecording)
 class SessionRecordingAdmin(admin.ModelAdmin):
