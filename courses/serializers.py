@@ -1,7 +1,7 @@
 from .models_recordings import SessionRecording
 from .models import Chapter
 from rest_framework import serializers
-from .models import Subject, Course
+from .models import Subject, Course, Board
 
 
 class SubjectSerializer(serializers.ModelSerializer):
@@ -55,13 +55,22 @@ class SubjectSerializer(serializers.ModelSerializer):
         ]
 
 
+class BoardSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Board
+        fields = ("id", "name", "board_type")
+
+
 class CourseSerializer(serializers.ModelSerializer):
+    board = BoardSerializer(read_only=True)
+
     class Meta:
         model = Course
         fields = (
             "id",
             "title",
             "description",
+            "board",
             "created_at",
             "updated_at",
         )

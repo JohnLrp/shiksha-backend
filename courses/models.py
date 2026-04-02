@@ -11,6 +11,14 @@ class Course(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    board = models.ForeignKey(
+        "Board",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="courses"
+    )
+
     def __str__(self):
         return self.title
 
@@ -117,3 +125,32 @@ class SubjectTeacher(models.Model):
 
     def __str__(self):
         return f"{self.subject.name} → {self.teacher.email}"
+
+
+class Board(models.Model):
+    TYPE_STATE = "STATE"
+    TYPE_CENTRAL = "CENTRAL"
+
+    TYPE_CHOICES = [
+        (TYPE_STATE, "State"),
+        (TYPE_CENTRAL, "Central"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    name = models.CharField(max_length=100, unique=True, db_index=True)
+    board_type = models.CharField(
+        max_length=20,
+        choices=TYPE_CHOICES
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["board_type", "name"]
+        indexes = [
+            models.Index(fields=["name"]),
+        ]
+
+    def __str__(self):
+        return f"{self.name} ({self.board_type})"

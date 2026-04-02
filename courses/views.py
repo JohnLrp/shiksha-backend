@@ -17,12 +17,12 @@ from .models import Course, Subject
 from .serializers import CourseSerializer, SubjectSerializer
 from django.db.models import Count, Q
 from django.utils import timezone
-# update
 from django.shortcuts import get_object_or_404
 
 
-# Create Course (Teacher Only)
-
+# =========================
+# CREATE COURSE
+# =========================
 
 class CreateCourseView(APIView):
     permission_classes = [IsAuthenticated, IsTeacher]
@@ -31,34 +31,43 @@ class CreateCourseView(APIView):
         serializer = CourseSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        course = serializer.save(teacher=request.user)
+        course = serializer.save()  # ✅ FIX
 
         return Response(
-            CourseSerializer(course).data,
+            CourseSerializer(course).data,  # ✅ FIX
             status=status.HTTP_201_CREATED,
         )
 
 
+# =========================
 # LIST OWN COURSES
+# =========================
+
 class MyCoursesView(APIView):
     permission_classes = [IsAuthenticated, IsTeacher]
 
     def get(self, request):
-        courses = Course.objects.filter(teacher=request.user)
+        courses = Course.objects.filter(
+            subjects__subject_teachers__teacher=request.user
+        ).select_related("board").distinct()  # ✅ FIX
+
         serializer = CourseSerializer(courses, many=True)
         return Response(serializer.data)
 
-# new
 
+# =========================
+# UPDATE COURSE
+# =========================
 
 class UpdateCourseView(APIView):
     permission_classes = [IsAuthenticated, IsTeacher]
 
     def patch(self, request, course_id):
         course = get_object_or_404(
-            Course,
+            Course.objects.filter(
+                subjects__subject_teachers__teacher=request.user
+            ).distinct(),  # ✅ FIX
             id=course_id,
-            teacher=request.user,  # 🔐 ownership enforced
         )
 
         serializer = CourseSerializer(
@@ -72,19 +81,28 @@ class UpdateCourseView(APIView):
         return Response(serializer.data)
 
 
+# =========================
+# DELETE COURSE
+# =========================
+
 class DeleteCourseView(APIView):
     permission_classes = [IsAuthenticated, IsTeacher]
 
     def delete(self, request, course_id):
         course = get_object_or_404(
-            Course,
+            Course.objects.filter(
+                subjects__subject_teachers__teacher=request.user
+            ).distinct(),  # ✅ FIX
             id=course_id,
-            teacher=request.user,  # 🔐 ownership enforced
         )
 
         course.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
+
+# =========================
+# ENROLLED COURSES
+# =========================
 
 class MyEnrolledCoursesView(APIView):
     permission_classes = [IsAuthenticated]
@@ -93,7 +111,7 @@ class MyEnrolledCoursesView(APIView):
         enrollments = (
             Enrollment.objects
             .filter(user=request.user, status="ACTIVE")
-            .select_related("course")
+            .select_related("course__board")  # ✅ OPTIMIZED
         )
 
         courses = [enrollment.course for enrollment in enrollments]
@@ -102,11 +120,14 @@ class MyEnrolledCoursesView(APIView):
         return Response(serializer.data)
 
 
+# =========================
+# COURSE SUBJECTS
+# =========================
+
 class CourseSubjectsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, course_id):
-        # Ensure student is enrolled
         is_enrolled = Enrollment.objects.filter(
             user=request.user,
             course__id=course_id,
@@ -123,6 +144,10 @@ class CourseSubjectsView(APIView):
         return Response(serializer.data)
 
 
+# =========================
+# SUBJECT DETAIL
+# =========================
+
 class SubjectDetailView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -138,6 +163,10 @@ class SubjectDetailView(APIView):
         return Response(serializer.data)
 
 
+# =========================
+# SUBJECT DASHBOARD
+# =========================
+
 class SubjectDashboardView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -151,9 +180,6 @@ class SubjectDashboardView(APIView):
             id=subject_id
         )
 
-        # =========================
-        # TEACHER ACCESS
-        # =========================
         if user.has_role("TEACHER"):
             is_assigned = subject.subject_teachers.filter(
                 teacher=user
@@ -164,10 +190,6 @@ class SubjectDashboardView(APIView):
                     {"detail": "Not assigned to this subject."},
                     status=status.HTTP_403_FORBIDDEN
                 )
-
-        # =========================
-        # STUDENT ACCESS
-        # =========================
         else:
             if not Enrollment.objects.filter(
                 user=user,
@@ -179,17 +201,12 @@ class SubjectDashboardView(APIView):
                     status=status.HTTP_403_FORBIDDEN
                 )
 
-        # =========================
-        # ASSIGNMENTS
-        # =========================
-
         assignments = Assignment.objects.filter(
             chapter__subject=subject
         ).distinct()
 
         total_assignments = assignments.count()
 
-        # For teachers we don't calculate completed/pending
         if user.has_role("STUDENT"):
             completed_assignments = assignments.filter(
                 submissions__student=user
@@ -198,10 +215,6 @@ class SubjectDashboardView(APIView):
         else:
             completed_assignments = 0
             pending_assignments = total_assignments
-
-        # =========================
-        # QUIZZES
-        # =========================
 
         quizzes = Quiz.objects.filter(
             subject=subject,
@@ -250,13 +263,16 @@ class SubjectDashboardView(APIView):
         })
 
 
+# =========================
+# TEACHER CLASSES
+# =========================
+
 class TeacherMyClassesView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         user = request.user
 
-        # 🔐 Only teachers
         if not user.has_role(Role.TEACHER):
             return Response(
                 {"detail": "Only teachers allowed."},
@@ -273,7 +289,6 @@ class TeacherMyClassesView(APIView):
         response_data = []
 
         for subject in subjects:
-            # Count active students in that course
             students_count = Enrollment.objects.filter(
                 course=subject.course,
                 status=Enrollment.STATUS_ACTIVE
@@ -290,6 +305,10 @@ class TeacherMyClassesView(APIView):
         return Response(response_data)
 
 
+# =========================
+# SUBJECT CHAPTERS
+# =========================
+
 class SubjectChaptersView(APIView):
 
     permission_classes = [IsAuthenticated]
@@ -305,9 +324,9 @@ class SubjectChaptersView(APIView):
         return Response(serializer.data)
 
 
-# =====================================================
-# TEACHER — STUDENTS LIST FOR A SUBJECT
-# =====================================================
+# =========================
+# SUBJECT STUDENTS
+# =========================
 
 class SubjectStudentsView(APIView):
     permission_classes = [IsAuthenticated]
@@ -323,7 +342,6 @@ class SubjectStudentsView(APIView):
 
         subject = get_object_or_404(Subject, id=subject_id)
 
-        # Verify teacher is assigned to this subject
         if not SubjectTeacher.objects.filter(
             subject=subject, teacher=user
         ).exists():
@@ -367,32 +385,22 @@ class SubjectStudentsView(APIView):
         })
 
 
-# =====================================================
-# TEACHER — ALL STUDENTS ACROSS ALL CLASSES
-# =====================================================
+# =========================
+# TEACHER ALL STUDENTS
+# =========================
 
 class TeacherAllStudentsView(APIView):
-    """
-    HOW THIS WORKS:
-    1. Check the user is a teacher
-    2. Find all subjects this teacher is assigned to
-    3. For each subject, find all active enrollments
-    4. Collect unique students (a student might be in multiple courses)
-    5. Return the list with their course/subject info
-    """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         user = request.user
 
-        # Step 1: Only teachers can access this
         if not user.has_role(Role.TEACHER):
             return Response(
                 {"detail": "Only teachers allowed."},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        # Step 2: Get all subjects assigned to this teacher
         subjects = (
             Subject.objects
             .filter(subject_teachers__teacher=user)
@@ -400,7 +408,6 @@ class TeacherAllStudentsView(APIView):
             .distinct()
         )
 
-        # Step 3: Get all active enrollments for those courses
         course_ids = [s.course_id for s in subjects]
 
         enrollments = (
@@ -412,14 +419,12 @@ class TeacherAllStudentsView(APIView):
             .order_by("user__profile__full_name")
         )
 
-        # Step 4: Build response — track seen user IDs to avoid duplicates
         seen = set()
         students = []
 
         for enrollment in enrollments:
             u = enrollment.user
 
-            # Skip if we already added this student
             if u.id in seen:
                 continue
             seen.add(u.id)
@@ -440,7 +445,6 @@ class TeacherAllStudentsView(APIView):
                 "batch_code": enrollment.batch_code or "",
             })
 
-        # Step 5: Return everything
         return Response({
             "total_students": len(students),
             "students": students,

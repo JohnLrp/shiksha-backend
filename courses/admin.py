@@ -1,22 +1,24 @@
 from django.contrib import admin
 from .models import Course, Subject, Chapter, SubjectTeacher
 from .models_recordings import SessionRecording
-
+from .models import Board
 
 # =========================
 # COURSE ADMIN
 # =========================
 
+
 @admin.register(Course)
 class CourseAdmin(admin.ModelAdmin):
-    list_display = ("title", "created_at")
-    search_fields = ("title",)
-    list_filter = ("created_at",)
-
+    list_display = ("title", "board", "created_at")
+    search_fields = ("title", "board__name")
+    list_filter = ("created_at", "board")
+    autocomplete_fields = ["board"]
 
 # =========================
 # SUBJECT TEACHER INLINE
 # =========================
+
 
 class SubjectTeacherInline(admin.TabularInline):
     model = SubjectTeacher
@@ -57,9 +59,8 @@ class SubjectAdmin(admin.ModelAdmin):
     ]
 
     def get_teachers(self, obj):
-        return ", ".join(
-            [st.teacher.email for st in obj.subject_teachers.all()]
-        )
+        subject_teachers = obj.subject_teachers.select_related("teacher")
+        return ", ".join([st.teacher.email for st in subject_teachers])
 
     get_teachers.short_description = "Teachers"
 
@@ -93,3 +94,16 @@ class SessionRecordingAdmin(admin.ModelAdmin):
     search_fields = ("title", "subject__name")
     ordering = ("-session_date",)
     readonly_fields = ("created_at",)
+
+
+@admin.register(Board)
+class BoardAdmin(admin.ModelAdmin):
+    list_display = ("name", "board_type", "created_at", "course_count")
+    list_filter = ("board_type", "created_at")
+    search_fields = ("name",)
+    ordering = ("board_type", "name")
+
+    def course_count(self, obj):
+        return obj.courses.count()
+
+    course_count.short_description = "Courses"
