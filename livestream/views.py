@@ -25,10 +25,18 @@ from channels.layers import get_channel_layer
 from django.contrib.auth import get_user_model  # ✅ ADDED
 
 
+from livestream.services.session_state import set_session_state
+
+
 def broadcast_session_update(session):
     channel_layer = get_channel_layer()
 
-    # ✅ FIX (safe if Redis not running)
+    # 🔥 NEW: update Redis (safe)
+    try:
+        set_session_state(session)
+    except Exception:
+        pass  # never break system if Redis fails
+
     if not channel_layer:
         return
 
@@ -37,7 +45,7 @@ def broadcast_session_update(session):
         {
             "type": "session_update",
             "data": {
-                "status": session.status,
+                "status": session.computed_status(),
                 "teacher_left_at": (
                     session.teacher_left_at.isoformat()
                     if session.teacher_left_at else None
