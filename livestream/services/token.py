@@ -43,16 +43,13 @@ def generate_livekit_token(
     if not room_name:
         raise ValueError("Session has no room_name")
 
-    # =========================================================
-    # 🔥 FINAL ROLE-BASED PERMISSIONS (NO BUGS)
-    # =========================================================
-
     if is_teacher:
         # 🎤 PRESENTER (creator only)
         grants = VideoGrants(
             room_join=True,
             room=room_name,
             can_publish=True,
+            can_publish_data=True,
             can_subscribe=True,
         )
     else:
@@ -60,7 +57,8 @@ def generate_livekit_token(
         grants = VideoGrants(
             room_join=True,
             room=room_name,
-            can_publish=False,   # ❌ BLOCK MIC/CAMERA
+            can_publish=False,        # ❌ no mic/camera
+            can_publish_data=True,    # ✅ allows raise hand + chat
             can_subscribe=True,
         )
 
