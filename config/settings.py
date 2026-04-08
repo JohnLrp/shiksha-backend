@@ -32,6 +32,7 @@ SECURE_SSL_REDIRECT = True
 ALLOWED_HOSTS = [
     "134.209.154.122",
     "68.183.81.236",
+    "dev.api.shikshacom.com",
     "localhost",
     "127.0.0.1",
     "api.shikshacom.com",
@@ -192,6 +193,7 @@ USE_X_FORWARDED_HOST = True
 
 CSRF_TRUSTED_ORIGINS = [
     "https://api.shikshacom.com",
+    "https://dev.api.shikshacom.com",
     "https://shikshacom.com",
     "https://www.shikshacom.com",
     "https://app.shikshacom.com",
@@ -200,6 +202,7 @@ CSRF_TRUSTED_ORIGINS = [
 ]
 CORS_ALLOWED_ORIGINS = [
     "https://shikshacom.com",
+    "https://dev.api.shikshacom.com",
     "https://app.shikshacom.com",
     "https://www.shikshacom.com",
     "https://teacher.shikshacom.com",
