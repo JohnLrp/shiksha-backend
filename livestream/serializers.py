@@ -13,6 +13,7 @@ IST = ZoneInfo("Asia/Kolkata")
 
 class LiveSessionCreateSerializer(serializers.ModelSerializer):
     subject_id = serializers.UUIDField(write_only=True)
+    force_live = serializers.BooleanField(write_only=True, required=False, default=False)
 
     class Meta:
         model = LiveSession
@@ -23,6 +24,7 @@ class LiveSessionCreateSerializer(serializers.ModelSerializer):
             "start_time",
             "end_time",
             "subject_id",
+            "force_live",
         ]
         read_only_fields = ["id"]
 
@@ -68,13 +70,16 @@ class LiveSessionCreateSerializer(serializers.ModelSerializer):
                 {"end_time": ["End time must be after start time."]}
             )
 
-        if start_time <= now:
+        force_live = data.pop("force_live", False)
+        if not force_live and start_time <= now:
             raise serializers.ValidationError(
                 {"start_time": ["Cannot schedule a session in the past."]}
             )
 
         overlap_exists = LiveSession.objects.filter(
             subject=subject
+        ).exclude(
+            status__in=[LiveSession.STATUS_CANCELLED, LiveSession.STATUS_COMPLETED]
         ).filter(
             Q(start_time__lt=end_time) &
             Q(end_time__gt=start_time)
