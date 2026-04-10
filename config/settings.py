@@ -1,5 +1,12 @@
 from .settings_base import *
 
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "handlers": {"console": {"class": "logging.StreamHandler"}},
+    "root": {"handlers": ["console"], "level": "WARNING"},
+}
+
 ALLOWED_HOSTS = [
     "68.183.81.236",
     "api.shikshacom.com",
