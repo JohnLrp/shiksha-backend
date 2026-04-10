@@ -9,6 +9,8 @@ from django.shortcuts import get_object_or_404
 from .models import StudyMaterial, MaterialFile
 from .serializers import StudyMaterialSerializer
 from courses.models import Chapter
+from enrollments.models import Enrollment
+from livestream.services.notifications import push_ws_notification
 
 
 # ===============================
@@ -16,24 +18,19 @@ from courses.models import Chapter
 # ===============================
 
 class ChapterMaterials(APIView):
-
     permission_classes = [IsAuthenticated]
 
     def get(self, request, chapter_id):
-
         chapter = get_object_or_404(Chapter, id=chapter_id)
-
         materials = (
             StudyMaterial.objects
             .filter(chapter=chapter)
             .prefetch_related("files")
             .order_by("-created_at")
         )
-
         serializer = StudyMaterialSerializer(
             materials, many=True, context={"request": request}
         )
-
         return Response(serializer.data)
 
 
@@ -42,35 +39,27 @@ class ChapterMaterials(APIView):
 # ===============================
 
 class UploadStudyMaterial(APIView):
-
     permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser]
 
     def post(self, request, chapter_id=None):
-
         chapter_id = request.data.get("chapter_id")
         custom_chapter = request.data.get("custom_chapter")
 
-        # ✅ Chapter logic
         if chapter_id:
             chapter = get_object_or_404(Chapter, id=chapter_id)
-
         elif custom_chapter:
             subject_id = request.data.get("subject_id")
-
             if not subject_id:
                 return Response(
                     {"detail": "Subject is required for custom chapter"},
                     status=status.HTTP_400_BAD_REQUEST
                 )
-
             subject = get_object_or_404(Subject, id=subject_id)
-
             chapter = Chapter.objects.create(
                 subject=subject,
                 title=custom_chapter
             )
-
         else:
             return Response(
                 {"detail": "Chapter or custom chapter required"},
@@ -82,11 +71,9 @@ class UploadStudyMaterial(APIView):
 
         if not title:
             return Response({"detail": "Title is required"}, status=400)
-
         if not file_ids:
             return Response({"detail": "At least one file required"}, status=400)
 
-        # ✅ CREATE MATERIAL FIRST
         material = StudyMaterial.objects.create(
             chapter=chapter,
             title=title,
@@ -94,14 +81,29 @@ class UploadStudyMaterial(APIView):
             uploaded_by=request.user
         )
 
-        # ✅ ATTACH FILES
         for fid in file_ids:
             file = get_object_or_404(MaterialFile, id=fid)
             file.material = material
             file.save()
 
-        serializer = StudyMaterialSerializer(material, context={"request": request})
+        # 🔥 Notify enrolled students via WebSocket
+        course = chapter.subject.course
+        students = Enrollment.objects.filter(
+            course=course,
+            status=Enrollment.STATUS_ACTIVE
+        ).select_related("user")
 
+        for enrollment in students:
+            push_ws_notification(enrollment.user.id, {
+                'type': 'material',
+                'title': f"New study material: {title}",
+                'chapter': chapter.title,
+                'subject': chapter.subject.name,
+                'id': str(material.id),
+            })
+
+        serializer = StudyMaterialSerializer(
+            material, context={"request": request})
         return Response(serializer.data, status=201)
 
 
@@ -110,15 +112,11 @@ class UploadStudyMaterial(APIView):
 # ===============================
 
 class DeleteStudyMaterial(APIView):
-
     permission_classes = [IsAuthenticated]
 
     def delete(self, request, material_id):
-
         material = get_object_or_404(StudyMaterial, id=material_id)
-
         material.delete()
-
         return Response(
             {"detail": "Material deleted successfully"},
             status=status.HTTP_204_NO_CONTENT
@@ -130,24 +128,19 @@ class DeleteStudyMaterial(APIView):
 # ===============================
 
 class SubjectMaterials(APIView):
-
     permission_classes = [IsAuthenticated]
 
     def get(self, request, subject_id):
-
         subject = get_object_or_404(Subject, id=subject_id)
-
         materials = (
             StudyMaterial.objects
             .filter(chapter__subject=subject)
             .prefetch_related("files")
             .order_by("-created_at")
         )
-
         serializer = StudyMaterialSerializer(
             materials, many=True, context={"request": request}
         )
-
         return Response(serializer.data)
 
 
@@ -156,13 +149,10 @@ class SubjectMaterials(APIView):
 # ===============================
 
 class StudentSubjectMaterials(APIView):
-
     permission_classes = [IsAuthenticated]
 
     def get(self, request, subject_id):
-
         subject = get_object_or_404(Subject, id=subject_id)
-
         materials = (
             StudyMaterial.objects
             .filter(chapter__subject=subject)
@@ -170,53 +160,44 @@ class StudentSubjectMaterials(APIView):
             .prefetch_related("files")
             .order_by("-created_at")
         )
-
         serializer = StudyMaterialSerializer(
             materials, many=True, context={"request": request}
         )
-
         return Response(serializer.data)
 
 
 # ===============================
-# MATERIAL DETAIL (NEW)
+# MATERIAL DETAIL
 # ===============================
 
 class StudyMaterialDetail(APIView):
-
     permission_classes = [IsAuthenticated]
 
     def get(self, request, material_id):
-
         material = get_object_or_404(
             StudyMaterial.objects.prefetch_related("files"),
             id=material_id
         )
-
         serializer = StudyMaterialSerializer(
             material,
             context={"request": request}
         )
-
         return Response(serializer.data)
-    
-class UploadTempFile(APIView):
 
+
+class UploadTempFile(APIView):
     permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser]
 
     def post(self, request):
-
         file = request.FILES.get("file")
-
         if not file:
             return Response({"detail": "File required"}, status=400)
 
         temp = MaterialFile.objects.create(
             file=file,
-            material=None  # 🔥 allow null temporarily
+            material=None
         )
-
         return Response({
             "id": str(temp.id),
             "file_name": temp.filename(),
