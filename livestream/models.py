@@ -53,7 +53,7 @@ class LiveSession(models.Model):
     room_name = models.CharField(max_length=255, unique=True)
 
     status = models.CharField(
-        max_length=30,  # 🔥 increased for new states
+        max_length=30,
         choices=STATUS_CHOICES,
         default=STATUS_SCHEDULED,
     )
@@ -75,7 +75,7 @@ class LiveSession(models.Model):
             models.Index(fields=["subject"]),
             models.Index(fields=["start_time"]),
             models.Index(fields=["status"]),
-            models.Index(fields=["teacher_left_at"]),  # 🔥 IMPORTANT
+            models.Index(fields=["teacher_left_at"]),
             models.Index(fields=["course", "start_time"]),
             models.Index(fields=["subject", "start_time"]),
         ]
@@ -101,18 +101,22 @@ class LiveSession(models.Model):
         if now >= self.end_time:
             return self.STATUS_COMPLETED
 
+        # Manual pause takes priority over teacher_left_at timer
+        if self.status == self.STATUS_PAUSED and not self.teacher_left_at:
+            return self.STATUS_PAUSED
+
         if self.teacher_left_at:
             diff = now - self.teacher_left_at
 
-        # 0–10 min → reconnecting
+            # 0–10 min → reconnecting
             if diff <= timedelta(minutes=10):
                 return self.STATUS_RECONNECTING
 
-        # 10–60 min → paused
+            # 10–60 min → paused
             if diff <= timedelta(minutes=60):
                 return self.STATUS_PAUSED
 
-        # >60 min → completed
+            # >60 min → completed
             return self.STATUS_COMPLETED
 
         if self.status == self.STATUS_LIVE and not self.teacher_left_at:
