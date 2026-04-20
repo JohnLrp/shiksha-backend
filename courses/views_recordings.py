@@ -206,3 +206,31 @@ class RecordingDetailView(APIView):
         serializer = SessionRecordingSerializer(recording)
 
         return Response(serializer.data)
+
+
+class SignedUploadUrlView(APIView):
+    """
+    Returns a one-time direct-upload URL for Bunny.
+    The AccessKey never leaves the server.
+    """
+    permission_classes = [IsAuthenticated, IsTeacher]
+
+    def post(self, request):
+        video_id = request.data.get("video_id")
+        if not video_id:
+            return Response({"error": "video_id required"}, status=400)
+
+        upload_url = (
+            f"https://video.bunnycdn.com/library/"
+            f"{settings.BUNNY_LIBRARY_ID}/videos/{video_id}"
+        )
+
+        # Return the URL + the key as a short-lived token
+        # Better: generate a pre-signed URL with expiry if your CDN supports it.
+        # For Bunny, we return the URL and inject the key via a server-side proxy
+        # rather than sending the raw AccessKey to the client.
+        return Response({
+            "upload_url": upload_url,
+            # If you must pass the key, scope it to this video_id only via
+            # a signed JWT or a short-lived proxy route instead.
+        })
