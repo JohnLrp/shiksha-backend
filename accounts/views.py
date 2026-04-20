@@ -601,6 +601,8 @@ class TeacherProfileView(APIView):
 
         if "profile_photo" in request.FILES:
             profile.profile_photo = request.FILES["profile_photo"]
+        elif "photo" in request.FILES:
+            profile.profile_photo = request.FILES["photo"]
 
         profile.save()
 
@@ -650,10 +652,14 @@ class TeacherProfileView(APIView):
                 "course": str(course),
             })
 
+        photo_url = None
+        if profile.profile_photo:
+            photo_url = request.build_absolute_uri(profile.profile_photo.url)
+
         data = {
             "name": f"{profile.first_name} {profile.last_name}".strip(),
             "gender": profile.gender or "",
-            "photo": profile.profile_photo.url if profile.profile_photo else None,
+            "photo": photo_url,
             "bio": tp.bio if tp else "",
             "highest_degree": tp.get_highest_degree_display() if tp and tp.highest_degree else "",
             "field_of_study": tp.field_of_study if tp else "",
