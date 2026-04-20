@@ -234,3 +234,19 @@ class SignedUploadUrlView(APIView):
             # If you must pass the key, scope it to this video_id only via
             # a signed JWT or a short-lived proxy route instead.
         })
+
+
+class SignedUploadUrlView(APIView):
+    permission_classes = [IsAuthenticated, IsTeacher]
+
+    def post(self, request):
+        video_id = request.data.get("video_id")
+        if not video_id:
+            return Response({"error": "video_id required"}, status=400)
+
+        upload_url = (
+            f"https://video.bunnycdn.com/library/"
+            f"{settings.BUNNY_LIBRARY_ID}/videos/{video_id}"
+        )
+
+        return Response({"upload_url": upload_url})
