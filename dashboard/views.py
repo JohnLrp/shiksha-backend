@@ -69,12 +69,13 @@ class DashboardView(APIView):
             today_start = now.replace(
                 hour=0, minute=0, second=0, microsecond=0)
 
-            # Today's sessions — all sessions scheduled for today's date
+            # Sessions card — today + next 7 days
             sessions = (
                 LiveSession.objects
                 .filter(
                     subject_id__in=subject_ids,
-                    start_time__date=now.date(),
+                    start_time__gte=today_start,
+                    start_time__lte=today_start + timedelta(days=7),
                 )
                 .exclude(status__in=EXCLUDED_STATUSES)
                 .select_related("subject", "created_by")
@@ -120,12 +121,13 @@ class DashboardView(APIView):
             today_start = now.replace(
                 hour=0, minute=0, second=0, microsecond=0)
 
-            # Today's sessions — all sessions scheduled for today's date
+            # Sessions card — today + next 7 days
             sessions = (
                 LiveSession.objects
                 .filter(
                     created_by=user,
-                    start_time__date=now.date(),
+                    start_time__gte=today_start,
+                    start_time__lte=today_start + timedelta(days=7),
                 )
                 .exclude(status__in=EXCLUDED_STATUSES)
                 .select_related("subject", "created_by")
