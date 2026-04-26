@@ -125,6 +125,13 @@ def _notify_user(user, title, session):
             session.scheduled_date, session.scheduled_time
         )
 
+        # Make sure the saved due_date is timezone-aware. ``datetime.combine``
+        # returns a naive datetime; saving naive datetimes when USE_TZ=True
+        # emits warnings and (depending on Django version) can blow up
+        # downstream comparisons. Force-aware in the project tz.
+        if timezone.is_naive(scheduled_dt):
+            scheduled_dt = timezone.make_aware(scheduled_dt)
+
         activity, created = Activity.objects.get_or_create(
             user=user,
             type=Activity.TYPE_SESSION,
@@ -132,6 +139,11 @@ def _notify_user(user, title, session):
             object_id=session.id,
             title=title,
             defaults={
+                # Match the shape used by other notification producers
+                # (assignments, quizzes, live sessions) so the dashboard
+                # serializer never sees a NULL subject_id from one feature
+                # and a UUID from another.
+                "subject_id": session.subject_id,
                 "subject_name": session.subject_name,
                 "due_date": scheduled_dt,
             },
@@ -778,18 +790,39 @@ def join_study_group(request, session_id):
 
     user = request.user
 
-    # Auth check
+    # Auth check.
+    #
+    # Roles in a study group:
+    #   * Host:  the student who created the group. Implicitly accepted —
+    #            no invite row exists for them. Only the host may flip the
+    #            status from scheduled → live (start the room).
+    #   * Invited teacher / invited student: must explicitly accept their
+    #            own invite before they may join. They cannot start the
+    #            room; they wait until the host opens it.
     is_host = (session.host_id == user.id)
     invite = session.invites.filter(user=user).first()
-    is_invited_teacher = (
+    is_accepted_invitee = bool(invite and invite.status == "accepted")
+    is_invited_teacher = bool(
         session.invited_teacher_id and session.invited_teacher_id == user.id
-        and invite and invite.status == "accepted"
+        and is_accepted_invitee
     )
-    is_accepted_invitee = (invite and invite.status == "accepted")
 
-    if not (is_host or is_accepted_invitee or is_invited_teacher):
+    if is_host:
+        # Implicit accept; no further gate.
+        pass
+    elif invite is None:
         return Response(
             {"error": "You are not a participant in this study group."},
+            status=403,
+        )
+    elif invite.status == "declined":
+        return Response(
+            {"error": "You declined this invite, so you can't join the room."},
+            status=403,
+        )
+    elif invite.status != "accepted":
+        return Response(
+            {"error": "You must accept the invite before you can join the room."},
             status=403,
         )
 
@@ -799,13 +832,22 @@ def join_study_group(request, session_id):
             {"error": f"Group is {session.status}."}, status=400
         )
 
-    # Open window: the room becomes joinable the moment any one invitee
-    # (student or teacher) has accepted. There is no "join early" gate any
-    # more — the scheduled date/time is treated as a soft reminder rather
-    # than a hard cutoff. The duration timer doesn't start until the first
-    # person actually enters the room (room_started_at is set below).
+    # Open window: the host opens the room once at least one non-host
+    # invitee has accepted. There is no "join early" gate — the scheduled
+    # date/time is a soft reminder. The duration timer starts on the
+    # first physical join (which sets ``room_started_at`` below).
+    #
+    # Non-host invitees cannot start the room. They get a clear error
+    # asking them to wait for the host until the host has opened it.
     now = timezone.now()
     if session.status == "scheduled":
+        if not is_host:
+            return Response(
+                {"error": "Only the host can start this study group. "
+                          "Please wait until the host opens the room."},
+                status=400,
+            )
+
         accepted_count = session.invites.filter(status="accepted").count()
         if accepted_count < 1:
             return Response(
