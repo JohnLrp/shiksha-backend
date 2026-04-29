@@ -790,8 +790,15 @@ def join_study_group(request, session_id):
       * schedules a Celery task at room_started_at + duration for the
         hard-duration cutoff.
     """
+    # NOTE: do not use ``select_for_update()`` on this initial read. We're
+    # in autocommit (no surrounding ``transaction.atomic()``) and Django
+    # raises ``TransactionManagementError`` if SELECT ... FOR UPDATE is
+    # issued in autocommit mode on Postgres — that exception is not a
+    # DRF ``APIException`` so it escapes DRF and Django returns its raw
+    # HTML 500 page (which is what the host saw when clicking START ROOM).
+    # The row is locked INSIDE the atomic flip block below instead.
     try:
-        session = StudyGroupSession.objects.select_for_update().get(pk=session_id)
+        session = StudyGroupSession.objects.get(pk=session_id)
     except StudyGroupSession.DoesNotExist:
         return Response({"error": "Session not found."}, status=404)
 
@@ -862,18 +869,31 @@ def join_study_group(request, session_id):
                 status=400,
             )
 
+        # Lock the row inside the atomic block so concurrent /join/ calls
+        # from (somehow) two host clients can't both flip the status.
+        # The second caller will see ``status != 'scheduled'`` and fall
+        # through to the live-already branch below.
         with transaction.atomic():
-            session.status = "live"
-            session.room_name = f"study_group_{session.id}"
-            session.room_started_at = now
-            session.active_connections = 0
-            session.all_left_at = None
-            session.save(update_fields=[
-                "status", "room_name", "room_started_at",
-                "active_connections", "all_left_at", "updated_at",
-            ])
-        _schedule_hard_duration_cutoff(session)
-        _broadcast(session)
+            session = (
+                StudyGroupSession.objects
+                .select_for_update()
+                .get(pk=session.pk)
+            )
+            started_now = False
+            if session.status == "scheduled":
+                session.status = "live"
+                session.room_name = f"study_group_{session.id}"
+                session.room_started_at = now
+                session.active_connections = 0
+                session.all_left_at = None
+                session.save(update_fields=[
+                    "status", "room_name", "room_started_at",
+                    "active_connections", "all_left_at", "updated_at",
+                ])
+                started_now = True
+        if started_now:
+            _schedule_hard_duration_cutoff(session)
+            _broadcast(session)
 
     # Already live: check we're still within the duration
     if session.room_started_at:
