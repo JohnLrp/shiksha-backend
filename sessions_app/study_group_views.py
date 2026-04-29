@@ -748,7 +748,14 @@ def my_study_groups(request):
         ).exclude(past_orphan_q)
 
     qs = qs.distinct().order_by("scheduled_date", "scheduled_time")
-    return Response(StudyGroupListSerializer(qs, many=True).data)
+    # Use the Detail serializer here so each card carries its full ``invites``
+    # array. Card rendering only consumes the count fields (which are present
+    # in both serializers), but the frontend opens the Detail view directly
+    # from a card click without re-fetching, so it needs ``invites`` populated.
+    # Without this, teacher-side Accept/Decline buttons never render
+    # (myStatus is null because invitesList is empty).
+    # Cost is zero: ``_sg_qs()`` already prefetches the invites + their users.
+    return Response(StudyGroupDetailSerializer(qs, many=True).data)
 
 
 @api_view(["GET"])
