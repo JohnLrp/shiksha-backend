@@ -176,6 +176,51 @@ class ChatMessage(models.Model):
         return f"Chat in {self.session.id} by {self.sender_name} at {self.created_at}"
 
 
+# ---------------------------------------------------------------------------
+# Study-group chat
+#
+# A separate table from ChatMessage rather than a generic FK because:
+#   1. ChatMessage has a hard FK to PrivateSession in the DB and changing
+#      that to nullable would touch a lot of existing query paths.
+#   2. Per-session-type retention rules differ — study-group messages are
+#      deleted from the DB the moment the room ends (per product spec
+#      "the chat is stored in the live room until it closes, then it can
+#      be deleted from the database only after the room is ended"),
+#      whereas private-session messages persist with the row until the
+#      session is fully cleaned up.
+# Cleanup happens in study_group_views._end_study_group_internal which
+# bulk-deletes StudyGroupChatMessage.objects.filter(session=...).
+# ---------------------------------------------------------------------------
+class StudyGroupChatMessage(models.Model):
+    """Chat messages scoped to a single live StudyGroupSession."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    session = models.ForeignKey(
+        "StudyGroupSession",
+        on_delete=models.CASCADE,
+        related_name="chat_messages",
+    )
+    sender = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="study_group_messages",
+    )
+    sender_name = models.CharField(max_length=255)
+    # "host" / "teacher" / "student" — the in-room badge shown to peers.
+    sender_role = models.CharField(max_length=20, default="student")
+    message = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at"]
+        indexes = [
+            models.Index(fields=["session", "created_at"]),
+        ]
+
+    def __str__(self):
+        return f"SGChat in {self.session_id} by {self.sender_name}"
+
+
 # ===========================================================================
 # STUDY GROUPS
 # ===========================================================================

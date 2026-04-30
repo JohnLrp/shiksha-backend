@@ -76,4 +76,14 @@ urlpatterns = [
          name="study-group-cancel"),
     path("study-groups/<uuid:session_id>/join/", sg_views.join_study_group,
          name="study-group-join"),
+
+    # --- Study-group chat ---
+    # Mirrors the private-session chat endpoints. WS path lives in
+    # routing.py at /ws/study-group/<id>/chat/.
+    path("study-groups/<uuid:session_id>/chat/",
+         sg_views.study_group_chat_messages,
+         name="study-group-chat"),
+    path("study-groups/<uuid:session_id>/chat/send/",
+         sg_views.send_study_group_chat_message,
+         name="study-group-chat-send"),
 ]
