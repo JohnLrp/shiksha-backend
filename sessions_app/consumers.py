@@ -183,25 +183,36 @@ class PrivateSessionChatConsumer(AsyncWebsocketConsumer):
 
 
 # ===========================================================================
-# Study Group consumer — mirrors PrivateSessionChatConsumer but writes to
-# a different table and uses a 7-minute idle grace window.
+# Study Group consumer — chat + presence tracking in one WebSocket.
+#
+# Mirrors PrivateSessionChatConsumer (one WS that handles BOTH chat broadcast
+# relay AND presence/auto-expire) so the front-end model is identical: the
+# Live room opens a single WS and the same connection counts toward the
+# 7-minute idle expire AND receives chat broadcasts.
+#
+# Renamed from StudyGroupPresenceConsumer (which was wired to a /presence/
+# path that nothing connected to) to StudyGroupChatConsumer; the route in
+# routing.py is now /chat/ to match the front-end's expected URL.
 # ===========================================================================
 
 STUDY_GROUP_AUTO_EXPIRE_DELAY = 7 * 60  # 7 minutes
 _sg_expire_tasks: dict[str, asyncio.Task] = {}
 
 
-class StudyGroupPresenceConsumer(AsyncWebsocketConsumer):
+class StudyGroupChatConsumer(AsyncWebsocketConsumer):
     """
-    Tracks active connections for a StudyGroupSession room so the room
-    can auto-expire after 7 minutes of emptiness.  Also relays simple
-    presence events to other participants (so clients can refresh
-    participant counts without polling).
+    WebSocket consumer for study-group rooms.
+
+    Responsibilities:
+      • Relay `chat_message` broadcasts emitted by REST POST
+        (`send_study_group_chat_message`) to every connected client.
+      • Track active_connections so the room auto-expires after
+        STUDY_GROUP_AUTO_EXPIRE_DELAY (7 min) of no participants.
     """
 
     async def connect(self):
         self.session_id = self.scope["url_route"]["kwargs"]["session_id"]
-        self.group_name = f"study_group_presence_{self.session_id}"
+        self.group_name = f"study_group_chat_{self.session_id}"
 
         await self.channel_layer.group_add(self.group_name, self.channel_name)
         await self.accept()
@@ -230,6 +241,13 @@ class StudyGroupPresenceConsumer(AsyncWebsocketConsumer):
                 self._auto_expire_after_delay(self.session_id)
             )
             _sg_expire_tasks[self.session_id] = task
+
+    async def chat_message(self, event):
+        """Relay broadcasts from study_group_views.send_study_group_chat_message."""
+        await self.send(text_data=json.dumps({
+            "type": "chat_message",
+            "data": event["data"],
+        }))
 
     # ── DB helpers ───────────────────────────────────────────────────
     @database_sync_to_async
@@ -279,7 +297,7 @@ class StudyGroupPresenceConsumer(AsyncWebsocketConsumer):
             return
 
         _sg_expire_tasks.pop(session_id, None)
-        ended = await StudyGroupPresenceConsumer._try_auto_end(session_id)
+        ended = await StudyGroupChatConsumer._try_auto_end(session_id)
         if ended:
             logger.info(
                 "Study group %s auto-expired after %ds with no participants",
@@ -303,6 +321,11 @@ class StudyGroupPresenceConsumer(AsyncWebsocketConsumer):
         from .study_group_views import _end_study_group_internal
         return _end_study_group_internal(session, reason="auto_expired_all_left")
 
+
+# Back-compat alias — code outside this module that imported the old name
+# can keep working until callers are migrated. Routing.py now uses the new
+# name directly.
+StudyGroupPresenceConsumer = StudyGroupChatConsumer
 
 class UserNotificationConsumer(AsyncWebsocketConsumer):
     """

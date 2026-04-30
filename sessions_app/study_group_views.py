@@ -22,7 +22,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from .models import StudyGroupSession, StudyGroupInvite
+from .models import StudyGroupSession, StudyGroupInvite, StudyGroupChatMessage
 from .permissions import IsStudent
 from .serializers import get_user_name
 from .services.study_group_token import generate_study_group_token
@@ -188,13 +188,24 @@ def _broadcast(session):
 
 
 def _end_study_group_internal(session, reason="ended"):
-    """Finalise a live session. Used by hard-duration task, idle cleanup, and cancel-live."""
+    """Finalise a live session. Used by hard-duration task, idle cleanup, and cancel-live.
+
+    Per product spec, study-group chat persists only while the room is live —
+    on end, all chat messages for this session are dropped from the DB.
+    Wrapped in atomic so we never end a session while leaving stale chat
+    rows behind on a delete failure.
+    """
     if session.status != "live":
         return False
-    session.status = "completed"
-    session.ended_at = timezone.now()
-    session.save(update_fields=["status", "ended_at", "updated_at"])
-    logger.info("StudyGroup %s ended (reason: %s)", session.id, reason)
+    with transaction.atomic():
+        session.status = "completed"
+        session.ended_at = timezone.now()
+        session.save(update_fields=["status", "ended_at", "updated_at"])
+        deleted, _ = StudyGroupChatMessage.objects.filter(session=session).delete()
+    logger.info(
+        "StudyGroup %s ended (reason: %s) — purged %d chat msgs",
+        session.id, reason, deleted,
+    )
     return True
 
 
@@ -939,3 +950,125 @@ def join_study_group(request, session_id):
         "room_started_at": session.room_started_at.isoformat() if session.room_started_at else None,
         "remaining_ms": remaining_ms,
     })
+
+
+# ===========================================================================
+# CHAT ENDPOINTS  (study-group rooms only)
+#
+# Mirrors private-session chat (views.session_chat_messages /
+# views.send_chat_message) but writes to StudyGroupChatMessage.  Auth gate
+# allows the host plus any accepted invitee.  Storage is purged the moment
+# the session ends — see _end_study_group_internal which bulk-deletes
+# StudyGroupChatMessage rows for that session.
+# ===========================================================================
+
+
+def _chat_participant_check(session, user):
+    """
+    Return (allowed, error_response_or_None).
+    A user may chat in a study-group room iff they are the host or have
+    an 'accepted' invite for this session.
+    """
+    if session.host_id == user.id:
+        return True, None
+    invite = session.invites.filter(user=user).first()
+    if invite and invite.status == "accepted":
+        return True, None
+    return False, Response(
+        {"error": "Not a participant."},
+        status=http_status.HTTP_403_FORBIDDEN,
+    )
+
+
+def _serialize_sg_chat_message(msg):
+    return {
+        "id": str(msg.id),
+        "sender_id": str(msg.sender_id),
+        "sender_name": msg.sender_name,
+        "sender_role": msg.sender_role,
+        "message": msg.message,
+        "created_at": msg.created_at.isoformat(),
+    }
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def study_group_chat_messages(request, session_id):
+    """Return up to the last 200 chat messages for a study-group session."""
+    try:
+        session = StudyGroupSession.objects.get(pk=session_id)
+    except StudyGroupSession.DoesNotExist:
+        return Response({"error": "Session not found."}, status=404)
+
+    allowed, err = _chat_participant_check(session, request.user)
+    if not allowed:
+        return err
+
+    msgs = (
+        StudyGroupChatMessage.objects
+        .filter(session=session)
+        .order_by("created_at")[:200]
+    )
+    return Response([_serialize_sg_chat_message(m) for m in msgs])
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def send_study_group_chat_message(request, session_id):
+    """Persist a chat message and broadcast it to all WS clients in the room."""
+    try:
+        session = StudyGroupSession.objects.get(pk=session_id)
+    except StudyGroupSession.DoesNotExist:
+        return Response({"error": "Session not found."}, status=404)
+
+    allowed, err = _chat_participant_check(session, request.user)
+    if not allowed:
+        return err
+
+    if session.status != "live":
+        # Mirrors private-session behaviour — chat only while the room is open.
+        return Response(
+            {"error": "Chat is only available while the room is live."},
+            status=http_status.HTTP_400_BAD_REQUEST,
+        )
+
+    text = (request.data.get("message") or "").strip()
+    if not text:
+        return Response(
+            {"error": "Message cannot be empty."},
+            status=http_status.HTTP_400_BAD_REQUEST,
+        )
+    if len(text) > 2000:
+        return Response(
+            {"error": "Message too long (max 2000 chars)."},
+            status=http_status.HTTP_400_BAD_REQUEST,
+        )
+
+    user = request.user
+    is_host = (session.host_id == user.id)
+    is_invited_teacher = bool(
+        session.invited_teacher_id and session.invited_teacher_id == user.id
+    )
+    role = "host" if is_host else ("teacher" if is_invited_teacher else "student")
+
+    msg = StudyGroupChatMessage.objects.create(
+        session=session,
+        sender=user,
+        sender_name=get_user_name(user),
+        sender_role=role,
+        message=text,
+    )
+    payload = _serialize_sg_chat_message(msg)
+
+    # Fan-out to the consumer group; every connected client gets it.
+    channel_layer = get_channel_layer()
+    if channel_layer is not None:
+        try:
+            async_to_sync(channel_layer.group_send)(
+                f"study_group_chat_{session.id}",
+                {"type": "chat_message", "data": payload},
+            )
+        except Exception:
+            logger.exception("Channel-layer broadcast failed for study group %s", session.id)
+
+    return Response(payload, status=http_status.HTTP_201_CREATED)

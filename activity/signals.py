@@ -224,6 +224,11 @@ def quiz_submitted(sender, instance, created, **kwargs):
         subject_name=subject.name,
         ws_payload={
             "type": "submission",
+            # subtype lets the front-end bell distinguish quiz submissions
+            # from assignment submissions — the assignment-submissions
+            # detail route (/teacher/classes/<subj>/assignments/<id>/submissions)
+            # is assignment-only, so the bell falls back to /quizzes for this.
+            "subtype": "quiz_submission",
             "title": f"{student_name} submitted: {quiz.title}",
             "subject_name": subject.name,
             "subject_id": str(subject.id),
