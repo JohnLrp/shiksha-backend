@@ -47,7 +47,7 @@ class ParticipantSerializer(serializers.ModelSerializer):
     class Meta:
         model = SessionParticipant
         fields = ["id", "user_id", "name", "student_id",
-                  "role", "joined_at", "left_at"]
+                  "role", "joined_at", "left_at","status"]
 
     def get_name(self, obj):
         return get_user_name(obj.user)
