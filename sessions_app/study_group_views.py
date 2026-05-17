@@ -749,7 +749,7 @@ def my_study_groups(request):
         ).filter(
             Q(status__in=["completed", "cancelled", "expired"])
             | past_orphan_q
-        )
+        ).exclude(hidden_for=user)
     else:  # upcoming (default)
         qs = base.filter(
             Q(host=user)
@@ -759,6 +759,27 @@ def my_study_groups(request):
         ).exclude(past_orphan_q)
 
     qs = qs.distinct().order_by("scheduled_date", "scheduled_time")
+    items = list(qs)
+
+    # Upcoming-only safety filter: drop live sessions whose hard-duration
+    # has already elapsed but whose status hasn't yet been flipped to
+    # 'completed' by the Celery cutoff task or the idle-cleanup cron. The
+    # backend usually catches these via _schedule_hard_duration_cutoff or
+    # the next /join/ attempt, but neither fires if the room sits idle
+    # past its end time without anyone touching it. Without this we'd be
+    # serving cards that the UI then disables / errors on.
+    if tab == "upcoming":
+        now = timezone.now()
+        items = [
+            s for s in items
+            if not (
+                s.status == "live"
+                and s.room_started_at is not None
+                and (now - s.room_started_at).total_seconds()
+                    >= s.duration_minutes * 60
+            )
+        ]
+
     # Use the Detail serializer here so each card carries its full ``invites``
     # array. Card rendering only consumes the count fields (which are present
     # in both serializers), but the frontend opens the Detail view directly
@@ -766,7 +787,7 @@ def my_study_groups(request):
     # Without this, teacher-side Accept/Decline buttons never render
     # (myStatus is null because invitesList is empty).
     # Cost is zero: ``_sg_qs()`` already prefetches the invites + their users.
-    return Response(StudyGroupDetailSerializer(qs, many=True).data)
+    return Response(StudyGroupDetailSerializer(items, many=True).data)
 
 
 @api_view(["GET"])
@@ -782,6 +803,94 @@ def study_group_detail(request, session_id):
             {"error": "You do not have access to this study group."}, status=403
         )
     return Response(StudyGroupDetailSerializer(session).data)
+
+
+# ---------------------------------------------------------------------------
+# Per-user "hide from history" — soft-delete scoped to the requesting user.
+# The session row itself, the host's view, and other participants' views are
+# untouched. This is exclusively a History-tab cleanup mechanism.
+# ---------------------------------------------------------------------------
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def hide_study_group_for_me(request, session_id):
+    """Hide a single study group from MY History view.
+
+    Caller must have had access to the session (host / invited teacher /
+    invitee). Adding the same user to ``hidden_for`` twice is a no-op (M2M
+    ``add()`` is idempotent), so retries are safe.
+    """
+    try:
+        session = StudyGroupSession.objects.get(pk=session_id)
+    except StudyGroupSession.DoesNotExist:
+        return Response({"error": "Session not found."}, status=404)
+
+    if not _can_view(session, request.user):
+        return Response(
+            {"error": "You do not have access to this study group."}, status=403
+        )
+
+    session.hidden_for.add(request.user)
+    return Response({"ok": True})
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def clear_my_study_group_history(request):
+    """Bulk-hide history entries for the requesting user.
+
+    Body shapes (both supported):
+      {"all": true}                  → hide every history-tab session for me
+      {"session_ids": [<uuid>, ...]} → hide just the listed set
+
+    Mirrors the History queryset built in ``my_study_groups`` so we never
+    hide a session the user couldn't already see in History. Returns the
+    number of sessions actually affected (idempotent on already-hidden ones).
+    """
+    user = request.user
+    body = request.data or {}
+
+    now_local = timezone.localtime(timezone.now())
+    today = now_local.date()
+    now_t = now_local.time()
+    past_orphan_q = (
+        Q(status="scheduled") & Q(room_started_at__isnull=True) & (
+            Q(scheduled_date__lt=today)
+            | Q(scheduled_date=today, scheduled_time__lte=now_t)
+        )
+    )
+    visible_to_me_q = (
+        Q(host=user) | Q(invites__user=user) | Q(invited_teacher=user)
+    )
+
+    qs = StudyGroupSession.objects.filter(visible_to_me_q).filter(
+        Q(status__in=["completed", "cancelled", "expired"]) | past_orphan_q
+    ).distinct()
+
+    if body.get("all") is True:
+        target_ids = list(qs.values_list("id", flat=True))
+    else:
+        raw_ids = body.get("session_ids") or []
+        if not isinstance(raw_ids, list) or not raw_ids:
+            return Response(
+                {"error": "Provide either {'all': true} or "
+                          "{'session_ids': [...]}"},
+                status=400,
+            )
+        # Intersect requested ids with what the user is actually allowed to
+        # hide — silently drops ids that weren't theirs (or weren't in
+        # history). The user gets a count back so they know if anything
+        # was filtered.
+        target_ids = list(qs.filter(id__in=raw_ids).values_list("id", flat=True))
+
+    if not target_ids:
+        return Response({"ok": True, "hidden_count": 0})
+
+    # M2M's through-table; use the reverse side so we issue exactly one
+    # INSERT for each (session, user) pair that doesn't already exist.
+    user.hidden_study_groups.add(*target_ids)
+    return Response({"ok": True, "hidden_count": len(target_ids)})
 
 
 # ---------------------------------------------------------------------------
