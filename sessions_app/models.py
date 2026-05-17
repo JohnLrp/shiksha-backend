@@ -322,6 +322,18 @@ class StudyGroupSession(models.Model):
     active_connections = models.IntegerField(default=0)
     all_left_at = models.DateTimeField(null=True, blank=True)
 
+    # --- Per-user hide (History "Clear" UX) ---
+    # Any user in this set won't see this session in their History tab. The
+    # underlying session row is preserved — the host and other participants
+    # still see it, analytics/audit trails still work. This is a soft
+    # delete scoped to the requesting user, deliberately separate from the
+    # ``cancelled`` lifecycle state.
+    hidden_for = models.ManyToManyField(
+        settings.AUTH_USER_MODEL,
+        related_name="hidden_study_groups",
+        blank=True,
+    )
+
     class Meta:
         ordering = ["-created_at"]
         indexes = [
