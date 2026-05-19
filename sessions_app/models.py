@@ -113,6 +113,17 @@ class SessionParticipant(models.Model):
     )
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, default="student")
     joined_at = models.DateTimeField(null=True, blank=True)
+
+    status = models.CharField(
+        max_length=10,
+        choices=[
+            ("pending", "Pending"),
+            ("accepted", "Accepted"),
+            ("declined", "Declined"),
+        ],
+        default="pending",
+    )
+    
     left_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:

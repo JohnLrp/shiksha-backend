@@ -205,7 +205,8 @@ def request_session(request):
     SessionParticipant.objects.create(
         session=session,
         user=request.user,
-        role="student"
+        role="student",
+        status="accepted"
     )
 
     # Add any additional group students
@@ -215,7 +216,9 @@ def request_session(request):
             SessionParticipant.objects.get_or_create(
                 session=session,
                 user=student,
-                defaults={"role": "student"},
+                defaults={"role": "student",
+                          "status": "pending"},
+                
             )
         except User.DoesNotExist:
             pass
@@ -340,6 +343,42 @@ def decline_reschedule(request, session_id):
     session.save()
     _broadcast_session_update(session)
     return Response(PrivateSessionSerializer(session).data)
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated, IsStudent])
+def accept_invite(request, session_id):
+    try:
+        participant = SessionParticipant.objects.get(
+            session_id=session_id,
+            user=request.user
+        )
+    except SessionParticipant.DoesNotExist:
+        return Response({"error": "Not a participant"}, status=404)
+
+    participant.status = "accepted"
+    participant.save()
+
+    _broadcast_session_update(participant.session)
+
+    return Response({"message": "Accepted"})
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated, IsStudent])
+def decline_invite(request, session_id):
+    try:
+        participant = SessionParticipant.objects.get(
+            session_id=session_id,
+            user=request.user
+        )
+    except SessionParticipant.DoesNotExist:
+        return Response({"error": "Not a participant"}, status=404)
+
+    participant.status = "declined"
+    participant.save()
+
+    _broadcast_session_update(participant.session)
+
+    return Response({"message": "Declined"})
 
 
 # ===================================================================
@@ -533,6 +572,9 @@ def start_session(request, session_id):
             {"error": "Only approved sessions can be started."},
             status=status.HTTP_400_BAD_REQUEST,
         )
+    
+    # auto-decline pending students
+    session.participants.filter(status="pending").update(status="declined")
 
     session.status = "ongoing"
     session.room_name = f"private_{session.id}"
@@ -601,7 +643,7 @@ def session_detail(request, session_id):
     is_involved = (
         session.teacher == user
         or session.requested_by == user
-        or session.participants.filter(user=user).exists()
+        or session.participants.filter(user=user, status="accepted").exists()
     )
     if not is_involved:
         return Response(
@@ -626,7 +668,10 @@ def join_private_session(request, session_id):
     is_teacher = (session.teacher == user)
     is_student = (
         session.requested_by == user
-        or session.participants.filter(user=user).exists()
+        or session.participants.filter(
+            user=user,
+            status="accepted"
+        ).exists()
     )
 
     if not is_teacher and not is_student:
@@ -690,7 +735,7 @@ def session_chat_messages(request, session_id):
     is_involved = (
         session.teacher == user
         or session.requested_by == user
-        or session.participants.filter(user=user).exists()
+        or session.participants.filter(user=user, status="accepted").exists()
     )
     if not is_involved:
         return Response({"error": "Not a participant."}, status=status.HTTP_403_FORBIDDEN)
@@ -714,7 +759,7 @@ def send_chat_message(request, session_id):
     is_teacher = (session.teacher == user)
     is_student = (
         session.requested_by == user
-        or session.participants.filter(user=user).exists()
+        or session.participants.filter(user=user, status="accepted").exists()
     )
 
     if not is_teacher and not is_student:
@@ -848,3 +893,5 @@ def subject_students(request, subject_id):
         })
 
     return Response(data)
+
+
