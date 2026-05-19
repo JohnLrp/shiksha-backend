@@ -22,7 +22,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from .models import StudyGroupSession, StudyGroupInvite
+from .models import StudyGroupSession, StudyGroupInvite, StudyGroupChatMessage
 from .permissions import IsStudent
 from .serializers import get_user_name
 from .services.study_group_token import generate_study_group_token
@@ -125,6 +125,13 @@ def _notify_user(user, title, session):
             session.scheduled_date, session.scheduled_time
         )
 
+        # Make sure the saved due_date is timezone-aware. ``datetime.combine``
+        # returns a naive datetime; saving naive datetimes when USE_TZ=True
+        # emits warnings and (depending on Django version) can blow up
+        # downstream comparisons. Force-aware in the project tz.
+        if timezone.is_naive(scheduled_dt):
+            scheduled_dt = timezone.make_aware(scheduled_dt)
+
         activity, created = Activity.objects.get_or_create(
             user=user,
             type=Activity.TYPE_SESSION,
@@ -132,6 +139,11 @@ def _notify_user(user, title, session):
             object_id=session.id,
             title=title,
             defaults={
+                # Match the shape used by other notification producers
+                # (assignments, quizzes, live sessions) so the dashboard
+                # serializer never sees a NULL subject_id from one feature
+                # and a UUID from another.
+                "subject_id": session.subject_id,
                 "subject_name": session.subject_name,
                 "due_date": scheduled_dt,
             },
@@ -176,13 +188,24 @@ def _broadcast(session):
 
 
 def _end_study_group_internal(session, reason="ended"):
-    """Finalise a live session. Used by hard-duration task, idle cleanup, and cancel-live."""
+    """Finalise a live session. Used by hard-duration task, idle cleanup, and cancel-live.
+
+    Per product spec, study-group chat persists only while the room is live —
+    on end, all chat messages for this session are dropped from the DB.
+    Wrapped in atomic so we never end a session while leaving stale chat
+    rows behind on a delete failure.
+    """
     if session.status != "live":
         return False
-    session.status = "completed"
-    session.ended_at = timezone.now()
-    session.save(update_fields=["status", "ended_at", "updated_at"])
-    logger.info("StudyGroup %s ended (reason: %s)", session.id, reason)
+    with transaction.atomic():
+        session.status = "completed"
+        session.ended_at = timezone.now()
+        session.save(update_fields=["status", "ended_at", "updated_at"])
+        deleted, _ = StudyGroupChatMessage.objects.filter(session=session).delete()
+    logger.info(
+        "StudyGroup %s ended (reason: %s) — purged %d chat msgs",
+        session.id, reason, deleted,
+    )
     return True
 
 
@@ -726,7 +749,7 @@ def my_study_groups(request):
         ).filter(
             Q(status__in=["completed", "cancelled", "expired"])
             | past_orphan_q
-        )
+        ).exclude(hidden_for=user)
     else:  # upcoming (default)
         qs = base.filter(
             Q(host=user)
@@ -736,7 +759,35 @@ def my_study_groups(request):
         ).exclude(past_orphan_q)
 
     qs = qs.distinct().order_by("scheduled_date", "scheduled_time")
-    return Response(StudyGroupListSerializer(qs, many=True).data)
+    items = list(qs)
+
+    # Upcoming-only safety filter: drop live sessions whose hard-duration
+    # has already elapsed but whose status hasn't yet been flipped to
+    # 'completed' by the Celery cutoff task or the idle-cleanup cron. The
+    # backend usually catches these via _schedule_hard_duration_cutoff or
+    # the next /join/ attempt, but neither fires if the room sits idle
+    # past its end time without anyone touching it. Without this we'd be
+    # serving cards that the UI then disables / errors on.
+    if tab == "upcoming":
+        now = timezone.now()
+        items = [
+            s for s in items
+            if not (
+                s.status == "live"
+                and s.room_started_at is not None
+                and (now - s.room_started_at).total_seconds()
+                    >= s.duration_minutes * 60
+            )
+        ]
+
+    # Use the Detail serializer here so each card carries its full ``invites``
+    # array. Card rendering only consumes the count fields (which are present
+    # in both serializers), but the frontend opens the Detail view directly
+    # from a card click without re-fetching, so it needs ``invites`` populated.
+    # Without this, teacher-side Accept/Decline buttons never render
+    # (myStatus is null because invitesList is empty).
+    # Cost is zero: ``_sg_qs()`` already prefetches the invites + their users.
+    return Response(StudyGroupDetailSerializer(items, many=True).data)
 
 
 @api_view(["GET"])
@@ -752,6 +803,94 @@ def study_group_detail(request, session_id):
             {"error": "You do not have access to this study group."}, status=403
         )
     return Response(StudyGroupDetailSerializer(session).data)
+
+
+# ---------------------------------------------------------------------------
+# Per-user "hide from history" — soft-delete scoped to the requesting user.
+# The session row itself, the host's view, and other participants' views are
+# untouched. This is exclusively a History-tab cleanup mechanism.
+# ---------------------------------------------------------------------------
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def hide_study_group_for_me(request, session_id):
+    """Hide a single study group from MY History view.
+
+    Caller must have had access to the session (host / invited teacher /
+    invitee). Adding the same user to ``hidden_for`` twice is a no-op (M2M
+    ``add()`` is idempotent), so retries are safe.
+    """
+    try:
+        session = StudyGroupSession.objects.get(pk=session_id)
+    except StudyGroupSession.DoesNotExist:
+        return Response({"error": "Session not found."}, status=404)
+
+    if not _can_view(session, request.user):
+        return Response(
+            {"error": "You do not have access to this study group."}, status=403
+        )
+
+    session.hidden_for.add(request.user)
+    return Response({"ok": True})
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def clear_my_study_group_history(request):
+    """Bulk-hide history entries for the requesting user.
+
+    Body shapes (both supported):
+      {"all": true}                  → hide every history-tab session for me
+      {"session_ids": [<uuid>, ...]} → hide just the listed set
+
+    Mirrors the History queryset built in ``my_study_groups`` so we never
+    hide a session the user couldn't already see in History. Returns the
+    number of sessions actually affected (idempotent on already-hidden ones).
+    """
+    user = request.user
+    body = request.data or {}
+
+    now_local = timezone.localtime(timezone.now())
+    today = now_local.date()
+    now_t = now_local.time()
+    past_orphan_q = (
+        Q(status="scheduled") & Q(room_started_at__isnull=True) & (
+            Q(scheduled_date__lt=today)
+            | Q(scheduled_date=today, scheduled_time__lte=now_t)
+        )
+    )
+    visible_to_me_q = (
+        Q(host=user) | Q(invites__user=user) | Q(invited_teacher=user)
+    )
+
+    qs = StudyGroupSession.objects.filter(visible_to_me_q).filter(
+        Q(status__in=["completed", "cancelled", "expired"]) | past_orphan_q
+    ).distinct()
+
+    if body.get("all") is True:
+        target_ids = list(qs.values_list("id", flat=True))
+    else:
+        raw_ids = body.get("session_ids") or []
+        if not isinstance(raw_ids, list) or not raw_ids:
+            return Response(
+                {"error": "Provide either {'all': true} or "
+                          "{'session_ids': [...]}"},
+                status=400,
+            )
+        # Intersect requested ids with what the user is actually allowed to
+        # hide — silently drops ids that weren't theirs (or weren't in
+        # history). The user gets a count back so they know if anything
+        # was filtered.
+        target_ids = list(qs.filter(id__in=raw_ids).values_list("id", flat=True))
+
+    if not target_ids:
+        return Response({"ok": True, "hidden_count": 0})
+
+    # M2M's through-table; use the reverse side so we issue exactly one
+    # INSERT for each (session, user) pair that doesn't already exist.
+    user.hidden_study_groups.add(*target_ids)
+    return Response({"ok": True, "hidden_count": len(target_ids)})
 
 
 # ---------------------------------------------------------------------------
@@ -771,25 +910,53 @@ def join_study_group(request, session_id):
       * schedules a Celery task at room_started_at + duration for the
         hard-duration cutoff.
     """
+    # NOTE: do not use ``select_for_update()`` on this initial read. We're
+    # in autocommit (no surrounding ``transaction.atomic()``) and Django
+    # raises ``TransactionManagementError`` if SELECT ... FOR UPDATE is
+    # issued in autocommit mode on Postgres — that exception is not a
+    # DRF ``APIException`` so it escapes DRF and Django returns its raw
+    # HTML 500 page (which is what the host saw when clicking START ROOM).
+    # The row is locked INSIDE the atomic flip block below instead.
     try:
-        session = StudyGroupSession.objects.select_for_update().get(pk=session_id)
+        session = StudyGroupSession.objects.get(pk=session_id)
     except StudyGroupSession.DoesNotExist:
         return Response({"error": "Session not found."}, status=404)
 
     user = request.user
 
-    # Auth check
+    # Auth check.
+    #
+    # Roles in a study group:
+    #   * Host:  the student who created the group. Implicitly accepted —
+    #            no invite row exists for them. Only the host may flip the
+    #            status from scheduled → live (start the room).
+    #   * Invited teacher / invited student: must explicitly accept their
+    #            own invite before they may join. They cannot start the
+    #            room; they wait until the host opens it.
     is_host = (session.host_id == user.id)
     invite = session.invites.filter(user=user).first()
-    is_invited_teacher = (
+    is_accepted_invitee = bool(invite and invite.status == "accepted")
+    is_invited_teacher = bool(
         session.invited_teacher_id and session.invited_teacher_id == user.id
-        and invite and invite.status == "accepted"
+        and is_accepted_invitee
     )
-    is_accepted_invitee = (invite and invite.status == "accepted")
 
-    if not (is_host or is_accepted_invitee or is_invited_teacher):
+    if is_host:
+        # Implicit accept; no further gate.
+        pass
+    elif invite is None:
         return Response(
             {"error": "You are not a participant in this study group."},
+            status=403,
+        )
+    elif invite.status == "declined":
+        return Response(
+            {"error": "You declined this invite, so you can't join the room."},
+            status=403,
+        )
+    elif invite.status != "accepted":
+        return Response(
+            {"error": "You must accept the invite before you can join the room."},
             status=403,
         )
 
@@ -799,13 +966,22 @@ def join_study_group(request, session_id):
             {"error": f"Group is {session.status}."}, status=400
         )
 
-    # Open window: the room becomes joinable the moment any one invitee
-    # (student or teacher) has accepted. There is no "join early" gate any
-    # more — the scheduled date/time is treated as a soft reminder rather
-    # than a hard cutoff. The duration timer doesn't start until the first
-    # person actually enters the room (room_started_at is set below).
+    # Open window: the host opens the room once at least one non-host
+    # invitee has accepted. There is no "join early" gate — the scheduled
+    # date/time is a soft reminder. The duration timer starts on the
+    # first physical join (which sets ``room_started_at`` below).
+    #
+    # Non-host invitees cannot start the room. They get a clear error
+    # asking them to wait for the host until the host has opened it.
     now = timezone.now()
     if session.status == "scheduled":
+        if not is_host:
+            return Response(
+                {"error": "Only the host can start this study group. "
+                          "Please wait until the host opens the room."},
+                status=400,
+            )
+
         accepted_count = session.invites.filter(status="accepted").count()
         if accepted_count < 1:
             return Response(
@@ -813,18 +989,31 @@ def join_study_group(request, session_id):
                 status=400,
             )
 
+        # Lock the row inside the atomic block so concurrent /join/ calls
+        # from (somehow) two host clients can't both flip the status.
+        # The second caller will see ``status != 'scheduled'`` and fall
+        # through to the live-already branch below.
         with transaction.atomic():
-            session.status = "live"
-            session.room_name = f"study_group_{session.id}"
-            session.room_started_at = now
-            session.active_connections = 0
-            session.all_left_at = None
-            session.save(update_fields=[
-                "status", "room_name", "room_started_at",
-                "active_connections", "all_left_at", "updated_at",
-            ])
-        _schedule_hard_duration_cutoff(session)
-        _broadcast(session)
+            session = (
+                StudyGroupSession.objects
+                .select_for_update()
+                .get(pk=session.pk)
+            )
+            started_now = False
+            if session.status == "scheduled":
+                session.status = "live"
+                session.room_name = f"study_group_{session.id}"
+                session.room_started_at = now
+                session.active_connections = 0
+                session.all_left_at = None
+                session.save(update_fields=[
+                    "status", "room_name", "room_started_at",
+                    "active_connections", "all_left_at", "updated_at",
+                ])
+                started_now = True
+        if started_now:
+            _schedule_hard_duration_cutoff(session)
+            _broadcast(session)
 
     # Already live: check we're still within the duration
     if session.room_started_at:
@@ -870,3 +1059,125 @@ def join_study_group(request, session_id):
         "room_started_at": session.room_started_at.isoformat() if session.room_started_at else None,
         "remaining_ms": remaining_ms,
     })
+
+
+# ===========================================================================
+# CHAT ENDPOINTS  (study-group rooms only)
+#
+# Mirrors private-session chat (views.session_chat_messages /
+# views.send_chat_message) but writes to StudyGroupChatMessage.  Auth gate
+# allows the host plus any accepted invitee.  Storage is purged the moment
+# the session ends — see _end_study_group_internal which bulk-deletes
+# StudyGroupChatMessage rows for that session.
+# ===========================================================================
+
+
+def _chat_participant_check(session, user):
+    """
+    Return (allowed, error_response_or_None).
+    A user may chat in a study-group room iff they are the host or have
+    an 'accepted' invite for this session.
+    """
+    if session.host_id == user.id:
+        return True, None
+    invite = session.invites.filter(user=user).first()
+    if invite and invite.status == "accepted":
+        return True, None
+    return False, Response(
+        {"error": "Not a participant."},
+        status=http_status.HTTP_403_FORBIDDEN,
+    )
+
+
+def _serialize_sg_chat_message(msg):
+    return {
+        "id": str(msg.id),
+        "sender_id": str(msg.sender_id),
+        "sender_name": msg.sender_name,
+        "sender_role": msg.sender_role,
+        "message": msg.message,
+        "created_at": msg.created_at.isoformat(),
+    }
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def study_group_chat_messages(request, session_id):
+    """Return up to the last 200 chat messages for a study-group session."""
+    try:
+        session = StudyGroupSession.objects.get(pk=session_id)
+    except StudyGroupSession.DoesNotExist:
+        return Response({"error": "Session not found."}, status=404)
+
+    allowed, err = _chat_participant_check(session, request.user)
+    if not allowed:
+        return err
+
+    msgs = (
+        StudyGroupChatMessage.objects
+        .filter(session=session)
+        .order_by("created_at")[:200]
+    )
+    return Response([_serialize_sg_chat_message(m) for m in msgs])
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def send_study_group_chat_message(request, session_id):
+    """Persist a chat message and broadcast it to all WS clients in the room."""
+    try:
+        session = StudyGroupSession.objects.get(pk=session_id)
+    except StudyGroupSession.DoesNotExist:
+        return Response({"error": "Session not found."}, status=404)
+
+    allowed, err = _chat_participant_check(session, request.user)
+    if not allowed:
+        return err
+
+    if session.status != "live":
+        # Mirrors private-session behaviour — chat only while the room is open.
+        return Response(
+            {"error": "Chat is only available while the room is live."},
+            status=http_status.HTTP_400_BAD_REQUEST,
+        )
+
+    text = (request.data.get("message") or "").strip()
+    if not text:
+        return Response(
+            {"error": "Message cannot be empty."},
+            status=http_status.HTTP_400_BAD_REQUEST,
+        )
+    if len(text) > 2000:
+        return Response(
+            {"error": "Message too long (max 2000 chars)."},
+            status=http_status.HTTP_400_BAD_REQUEST,
+        )
+
+    user = request.user
+    is_host = (session.host_id == user.id)
+    is_invited_teacher = bool(
+        session.invited_teacher_id and session.invited_teacher_id == user.id
+    )
+    role = "host" if is_host else ("teacher" if is_invited_teacher else "student")
+
+    msg = StudyGroupChatMessage.objects.create(
+        session=session,
+        sender=user,
+        sender_name=get_user_name(user),
+        sender_role=role,
+        message=text,
+    )
+    payload = _serialize_sg_chat_message(msg)
+
+    # Fan-out to the consumer group; every connected client gets it.
+    channel_layer = get_channel_layer()
+    if channel_layer is not None:
+        try:
+            async_to_sync(channel_layer.group_send)(
+                f"study_group_chat_{session.id}",
+                {"type": "chat_message", "data": payload},
+            )
+        except Exception:
+            logger.exception("Channel-layer broadcast failed for study group %s", session.id)
+
+    return Response(payload, status=http_status.HTTP_201_CREATED)

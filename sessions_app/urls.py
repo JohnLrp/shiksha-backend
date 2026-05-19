@@ -58,8 +58,17 @@ urlpatterns = [
          name="study-group-create"),
     path("study-groups/mine/", sg_views.my_study_groups,
          name="study-group-mine"),
+    # Bulk "Clear History" — must be declared BEFORE the <uuid:session_id>/
+    # detail route so URL dispatch doesn't try to parse "history" as a UUID
+    # and return a 404.
+    path("study-groups/history/clear/",
+         sg_views.clear_my_study_group_history,
+         name="study-group-history-clear"),
     path("study-groups/<uuid:session_id>/", sg_views.study_group_detail,
          name="study-group-detail"),
+    path("study-groups/<uuid:session_id>/hide/",
+         sg_views.hide_study_group_for_me,
+         name="study-group-hide"),
     path("study-groups/<uuid:session_id>/invite/", sg_views.invite_more,
          name="study-group-invite-more"),
     path("study-groups/<uuid:session_id>/reinvite/", sg_views.reinvite,
@@ -76,4 +85,14 @@ urlpatterns = [
          name="study-group-cancel"),
     path("study-groups/<uuid:session_id>/join/", sg_views.join_study_group,
          name="study-group-join"),
+
+    # --- Study-group chat ---
+    # Mirrors the private-session chat endpoints. WS path lives in
+    # routing.py at /ws/study-group/<id>/chat/.
+    path("study-groups/<uuid:session_id>/chat/",
+         sg_views.study_group_chat_messages,
+         name="study-group-chat"),
+    path("study-groups/<uuid:session_id>/chat/send/",
+         sg_views.send_study_group_chat_message,
+         name="study-group-chat-send"),
 ]
