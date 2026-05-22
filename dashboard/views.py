@@ -39,11 +39,6 @@ logger = logging.getLogger(__name__)
 
 
 def _guard(label, fn, default):
-    """Run ``fn`` and return its result, or fall back to ``default``.
-
-    Any exception is logged with full traceback so the server log shows
-    exactly which dashboard section blew up.
-    """
     try:
         return fn()
     except Exception:
@@ -189,7 +184,16 @@ class DashboardView(APIView):
                                   lambda: _private_sessions(user, now),
                                   [])
         notifications = _guard("common.notifications", lambda: _notifications(user, now), [])
-        schedule = _guard("common.schedule", lambda: _schedule(user, now), [])
+        schedule      = _guard("common.schedule",      lambda: _schedule(user, now),        [])
+
+        # Serialize notifications once so we can count unread without a
+        # second DB hit — mobile bell badge reads data.unread_count.
+        notifications_data = _guard(
+            "ser.notifications",
+            lambda: DashboardActivitySerializer(notifications, many=True).data,
+            []
+        )
+        unread_count = sum(1 for n in notifications_data if n.get("unread"))
 
         return Response({
             "sessions":         _guard("ser.sessions",
@@ -202,8 +206,8 @@ class DashboardView(APIView):
                                        lambda: DashboardQuizSerializer(quizzes, many=True).data, []),
             "private_sessions": _guard("ser.private_sessions",
                                        lambda: DashboardPrivateSessionSerializer(private_sessions, many=True).data, []),
-            "notifications":    _guard("ser.notifications",
-                                       lambda: DashboardActivitySerializer(notifications, many=True).data, []),
+            "notifications":    notifications_data,
             "schedule":         _guard("ser.schedule",
                                        lambda: DashboardActivitySerializer(schedule, many=True).data, []),
+            "unread_count":     unread_count,
         })
