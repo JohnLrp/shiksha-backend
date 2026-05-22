@@ -82,11 +82,18 @@ class SubjectSerializer(serializers.ModelSerializer):
 class BoardSerializer(serializers.ModelSerializer):
     class Meta:
         model = Board
-        fields = ("id", "name", "board_type")
+        fields = ("id", "name", "board_type", "description", "is_active")
 
 
 class CourseSerializer(serializers.ModelSerializer):
     board = BoardSerializer(read_only=True)
+    board_id = serializers.PrimaryKeyRelatedField(
+        source="board",
+        queryset=Board.objects.all(),
+        write_only=True,
+        required=False,
+        allow_null=True,
+    )
     stream_name = serializers.CharField(source="stream.name", read_only=True)
 
     class Meta:
@@ -95,8 +102,11 @@ class CourseSerializer(serializers.ModelSerializer):
             "id",
             "title",
             "description",
+            "price",
+            "subscription_duration_days",
             "stream_name",
             "board",
+            "board_id",
             "created_at",
             "updated_at",
         )

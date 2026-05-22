@@ -198,6 +198,11 @@ class Board(models.Model):
         max_length=20,
         choices=TYPE_CHOICES
     )
+    description = models.CharField(max_length=255, blank=True, default="")
+    is_active = models.BooleanField(
+        default=True,
+        help_text="Inactive boards render as 'Coming Soon' / dormant on the public site.",
+    )
 
     created_at = models.DateTimeField(auto_now_add=True)
 
