@@ -11,8 +11,8 @@ from enrollments.models import Enrollment, EnrollmentRequest, Subscription
 from accounts.permissions import IsTeacher, IsAdmin
 from quizzes.models import Quiz
 from assignments.models import Assignment
-from .models import Course, Subject
-from .serializers import CourseSerializer, SubjectSerializer
+from .models import Course, Subject, Board
+from .serializers import CourseSerializer, SubjectSerializer, BoardSerializer
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
 from datetime import timedelta
@@ -636,3 +636,196 @@ class AdminCourseListView(APIView):
             }
             for c in courses
         ])
+
+
+# =========================
+# ADMIN BOARD CRUD
+# =========================
+
+class AdminBoardListCreateView(APIView):
+    """GET → list every board (active + dormant). POST → create a board."""
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def get(self, request):
+        boards = (
+            Board.objects
+            .annotate(course_count=Count("courses"))
+            .order_by("board_type", "name")
+        )
+        return Response([
+            {
+                "id": str(b.id),
+                "name": b.name,
+                "board_type": b.board_type,
+                "description": b.description,
+                "is_active": b.is_active,
+                "course_count": b.course_count,
+            }
+            for b in boards
+        ])
+
+    def post(self, request):
+        serializer = BoardSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        board = serializer.save()
+        return Response(
+            BoardSerializer(board).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class AdminBoardDetailView(APIView):
+    """PATCH (toggle is_active / rename) and DELETE a board."""
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def patch(self, request, board_id):
+        board = get_object_or_404(Board, id=board_id)
+        serializer = BoardSerializer(board, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
+
+    def delete(self, request, board_id):
+        board = get_object_or_404(Board, id=board_id)
+        if board.courses.exists():
+            return Response(
+                {"detail": "Cannot delete a board that still has courses. Delete its courses first."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        board.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+# =========================
+# ADMIN COURSE-BY-BOARD + COURSE CRUD
+# =========================
+
+class AdminBoardCoursesView(APIView):
+    """List courses scoped to a single board."""
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def get(self, request, board_id):
+        get_object_or_404(Board, id=board_id)
+        courses = (
+            Course.objects
+            .filter(board_id=board_id)
+            .annotate(
+                enrollment_count=Count(
+                    "enrollments",
+                    filter=Q(enrollments__status=Enrollment.STATUS_ACTIVE),
+                ),
+                subject_count=Count("subjects", distinct=True),
+            )
+            .select_related("stream")
+            .order_by("title")
+        )
+        return Response([
+            {
+                "id": str(c.id),
+                "title": c.title,
+                "description": c.description,
+                "price": c.price,
+                "subscription_duration_days": c.subscription_duration_days,
+                "stream_name": c.stream.name if c.stream else None,
+                "enrollment_count": c.enrollment_count,
+                "subject_count": c.subject_count,
+                "created_at": c.created_at,
+            }
+            for c in courses
+        ])
+
+
+class AdminCourseCreateView(APIView):
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def post(self, request):
+        serializer = CourseSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        course = serializer.save()
+        return Response(
+            CourseSerializer(course).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class AdminCourseDeleteView(APIView):
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def delete(self, request, course_id):
+        course = get_object_or_404(Course, id=course_id)
+        course.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+# =========================
+# ADMIN SUBJECT CRUD
+# =========================
+
+class AdminCourseSubjectsView(APIView):
+    """GET subjects under a course; POST creates a new subject under that course."""
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def get(self, request, course_id):
+        get_object_or_404(Course, id=course_id)
+        subjects = Subject.objects.filter(course_id=course_id).order_by("order", "name")
+        return Response([
+            {
+                "id": str(s.id),
+                "name": s.name,
+                "order": s.order,
+                "image": request.build_absolute_uri(s.image.url) if s.image else None,
+                "created_at": s.created_at,
+            }
+            for s in subjects
+        ])
+
+    def post(self, request, course_id):
+        course = get_object_or_404(Course, id=course_id)
+        name = (request.data.get("name") or "").strip()
+        if not name:
+            return Response(
+                {"detail": "Subject name is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        order = request.data.get("order")
+        if order in (None, ""):
+            next_order = (
+                Subject.objects.filter(course=course)
+                .order_by("-order")
+                .values_list("order", flat=True)
+                .first()
+            )
+            order = (next_order or 0) + 1
+
+        if Subject.objects.filter(course=course, name__iexact=name).exists():
+            return Response(
+                {"detail": f"A subject named '{name}' already exists in this course."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        subject = Subject.objects.create(
+            course=course,
+            name=name,
+            order=order,
+            image=request.FILES.get("image"),
+        )
+        return Response(
+            {
+                "id": str(subject.id),
+                "name": subject.name,
+                "order": subject.order,
+                "image": request.build_absolute_uri(subject.image.url) if subject.image else None,
+                "created_at": subject.created_at,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class AdminSubjectDeleteView(APIView):
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def delete(self, request, subject_id):
+        subject = get_object_or_404(Subject, id=subject_id)
+        subject.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
