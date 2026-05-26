@@ -14,6 +14,13 @@ from .views import (
     SubjectsByCourseTitleView,
     PublicCourseDetailView,
     AdminCourseListView,
+    AdminBoardListCreateView,
+    AdminBoardDetailView,
+    AdminBoardCoursesView,
+    AdminCourseCreateView,
+    AdminCourseDeleteView,
+    AdminCourseSubjectsView,
+    AdminSubjectDeleteView,
 )
 from .views import MySubjectsView
 from .views_recordings import (
@@ -38,6 +45,19 @@ urlpatterns = [
     path("subjects-by-course/",   SubjectsByCourseTitleView.as_view()),
 
     path("admin/",                AdminCourseListView.as_view()),
+
+    # Admin Boards
+    path("admin/boards/",                          AdminBoardListCreateView.as_view()),
+    path("admin/boards/<uuid:board_id>/",          AdminBoardDetailView.as_view()),
+    path("admin/boards/<uuid:board_id>/courses/",  AdminBoardCoursesView.as_view()),
+
+    # Admin Course CRUD
+    path("admin/courses/",                         AdminCourseCreateView.as_view()),
+    path("admin/courses/<uuid:course_id>/",        AdminCourseDeleteView.as_view()),
+    path("admin/courses/<uuid:course_id>/subjects/", AdminCourseSubjectsView.as_view()),
+
+    # Admin Subject delete
+    path("admin/subjects/<uuid:subject_id>/",      AdminSubjectDeleteView.as_view()),
 
     path("",                           CreateCourseView.as_view()),
     path("mine/",                      MyCoursesView.as_view()),
