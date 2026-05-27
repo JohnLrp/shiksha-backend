@@ -14,7 +14,32 @@ admit_mode='open', short_code='' (filled in lazily on next save where needed),
 which preserves the current join semantics.
 """
 
+import secrets
+import string
+
 from django.db import migrations, models
+
+
+def _generate_short_code():
+    alphabet = string.ascii_lowercase + string.digits
+    parts = ["".join(secrets.choice(alphabet) for _ in range(3)) for _ in range(3)]
+    return "-".join(parts)
+
+
+def populate_short_codes(apps, schema_editor):
+    GroupSession = apps.get_model("sessions_app", "GroupSession")
+    used = set(
+        GroupSession.objects.exclude(short_code="")
+        .values_list("short_code", flat=True)
+    )
+    for gs in GroupSession.objects.filter(short_code=""):
+        while True:
+            code = _generate_short_code()
+            if code not in used:
+                used.add(code)
+                break
+        gs.short_code = code
+        gs.save(update_fields=["short_code"])
 
 
 class Migration(migrations.Migration):
@@ -26,6 +51,17 @@ class Migration(migrations.Migration):
 
     operations = [
         migrations.AddField(
+            model_name="groupsession",
+            name="short_code",
+            field=models.CharField(
+                blank=True,
+                default="",
+                help_text="Short shareable code (e.g. 'zfk-pbmc-rxd').",
+                max_length=20,
+            ),
+        ),
+        migrations.RunPython(populate_short_codes, migrations.RunPython.noop),
+        migrations.AlterField(
             model_name="groupsession",
             name="short_code",
             field=models.CharField(
