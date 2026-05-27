@@ -1,5 +1,5 @@
 """
-LiveKit access-token issuer for Study Group rooms.
+LiveKit access-token issuer for Group Session rooms.
 
 Mirrors `private_token.generate_private_token` so the frontend LiveKit
 plumbing is identical, but stamps a different `type` in metadata so
@@ -13,14 +13,14 @@ from django.conf import settings
 from livekit.api import AccessToken, VideoGrants
 
 
-def generate_study_group_token(user, session, display_name=None, role=None):
+def generate_group_session_token(user, session, display_name=None, role=None):
     """
     Build a short-lived LiveKit JWT for ``user`` joining ``session``.
 
     Parameters
     ----------
     user : accounts.User
-    session : sessions_app.StudyGroupSession
+    session : sessions_app.GroupSession
     display_name : str | None
         Explicit name for the LiveKit participant. Falls back to
         ``user.profile.full_name`` / ``user.get_full_name()`` / username.
@@ -55,7 +55,7 @@ def generate_study_group_token(user, session, display_name=None, role=None):
 
     token.with_metadata(json.dumps({
         "role": role,
-        "type": "study_group",
+        "type": "group_session",
         "user_id": str(user.id),
         "session_id": str(session.id),
     }))
@@ -64,7 +64,7 @@ def generate_study_group_token(user, session, display_name=None, role=None):
 
     room_name = session.room_name
     if not room_name:
-        raise ValueError("Study group session has no room_name")
+        raise ValueError("Group session has no room_name")
 
     token.with_grants(VideoGrants(
         room_join=True,

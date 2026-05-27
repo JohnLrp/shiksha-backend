@@ -183,47 +183,47 @@ class PrivateSessionChatConsumer(AsyncWebsocketConsumer):
 
 
 # ===========================================================================
-# Study Group consumer — chat + presence tracking in one WebSocket.
+# Group Session consumer — chat + presence tracking in one WebSocket.
 #
 # Mirrors PrivateSessionChatConsumer (one WS that handles BOTH chat broadcast
 # relay AND presence/auto-expire) so the front-end model is identical: the
 # Live room opens a single WS and the same connection counts toward the
 # 7-minute idle expire AND receives chat broadcasts.
 #
-# Renamed from StudyGroupPresenceConsumer (which was wired to a /presence/
-# path that nothing connected to) to StudyGroupChatConsumer; the route in
+# Renamed from GroupSessionPresenceConsumer (which was wired to a /presence/
+# path that nothing connected to) to GroupSessionChatConsumer; the route in
 # routing.py is now /chat/ to match the front-end's expected URL.
 # ===========================================================================
 
-STUDY_GROUP_AUTO_EXPIRE_DELAY = 7 * 60  # 7 minutes
-_sg_expire_tasks: dict[str, asyncio.Task] = {}
+GROUP_SESSION_AUTO_EXPIRE_DELAY = 7 * 60  # 7 minutes
+_gs_expire_tasks: dict[str, asyncio.Task] = {}
 
 
-class StudyGroupChatConsumer(AsyncWebsocketConsumer):
+class GroupSessionChatConsumer(AsyncWebsocketConsumer):
     """
-    WebSocket consumer for study-group rooms.
+    WebSocket consumer for group-session rooms.
 
     Responsibilities:
       • Relay `chat_message` broadcasts emitted by REST POST
-        (`send_study_group_chat_message`) to every connected client.
+        (`send_group_session_chat_message`) to every connected client.
       • Track active_connections so the room auto-expires after
-        STUDY_GROUP_AUTO_EXPIRE_DELAY (7 min) of no participants.
+        GROUP_SESSION_AUTO_EXPIRE_DELAY (7 min) of no participants.
     """
 
     async def connect(self):
         self.session_id = self.scope["url_route"]["kwargs"]["session_id"]
-        self.group_name = f"study_group_chat_{self.session_id}"
+        self.group_name = f"group_session_chat_{self.session_id}"
 
         await self.channel_layer.group_add(self.group_name, self.channel_name)
         await self.accept()
 
         await self._increment_connections()
 
-        task = _sg_expire_tasks.pop(self.session_id, None)
+        task = _gs_expire_tasks.pop(self.session_id, None)
         if task and not task.done():
             task.cancel()
             logger.info(
-                "Study-group auto-expire timer cancelled for %s (rejoin)",
+                "Group-session auto-expire timer cancelled for %s (rejoin)",
                 self.session_id,
             )
 
@@ -234,16 +234,16 @@ class StudyGroupChatConsumer(AsyncWebsocketConsumer):
         if remaining <= 0:
             await self._mark_all_left()
             logger.info(
-                "All participants left study group %s — starting %ds timer",
-                self.session_id, STUDY_GROUP_AUTO_EXPIRE_DELAY,
+                "All participants left group session %s — starting %ds timer",
+                self.session_id, GROUP_SESSION_AUTO_EXPIRE_DELAY,
             )
             task = asyncio.ensure_future(
                 self._auto_expire_after_delay(self.session_id)
             )
-            _sg_expire_tasks[self.session_id] = task
+            _gs_expire_tasks[self.session_id] = task
 
     async def chat_message(self, event):
-        """Relay broadcasts from study_group_views.send_study_group_chat_message."""
+        """Relay broadcasts from group_session_views.send_group_session_chat_message."""
         await self.send(text_data=json.dumps({
             "type": "chat_message",
             "data": event["data"],
@@ -252,8 +252,8 @@ class StudyGroupChatConsumer(AsyncWebsocketConsumer):
     # ── DB helpers ───────────────────────────────────────────────────
     @database_sync_to_async
     def _increment_connections(self):
-        from .models import StudyGroupSession
-        StudyGroupSession.objects.filter(
+        from .models import GroupSession
+        GroupSession.objects.filter(
             pk=self.session_id, status="live"
         ).update(
             active_connections=F("active_connections") + 1,
@@ -262,26 +262,26 @@ class StudyGroupChatConsumer(AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def _decrement_connections(self) -> int:
-        from .models import StudyGroupSession
-        StudyGroupSession.objects.filter(
+        from .models import GroupSession
+        GroupSession.objects.filter(
             pk=self.session_id, status="live"
         ).update(
             active_connections=F("active_connections") - 1,
         )
         try:
-            session = StudyGroupSession.objects.get(pk=self.session_id)
+            session = GroupSession.objects.get(pk=self.session_id)
             count = max(session.active_connections, 0)
             if session.active_connections < 0:
                 session.active_connections = 0
                 session.save(update_fields=["active_connections"])
             return count
-        except StudyGroupSession.DoesNotExist:
+        except GroupSession.DoesNotExist:
             return 0
 
     @database_sync_to_async
     def _mark_all_left(self):
-        from .models import StudyGroupSession
-        StudyGroupSession.objects.filter(
+        from .models import GroupSession
+        GroupSession.objects.filter(
             pk=self.session_id, status="live"
         ).update(
             all_left_at=timezone.now(),
@@ -292,25 +292,25 @@ class StudyGroupChatConsumer(AsyncWebsocketConsumer):
     @staticmethod
     async def _auto_expire_after_delay(session_id: str):
         try:
-            await asyncio.sleep(STUDY_GROUP_AUTO_EXPIRE_DELAY)
+            await asyncio.sleep(GROUP_SESSION_AUTO_EXPIRE_DELAY)
         except asyncio.CancelledError:
             return
 
-        _sg_expire_tasks.pop(session_id, None)
-        ended = await StudyGroupChatConsumer._try_auto_end(session_id)
+        _gs_expire_tasks.pop(session_id, None)
+        ended = await GroupSessionChatConsumer._try_auto_end(session_id)
         if ended:
             logger.info(
-                "Study group %s auto-expired after %ds with no participants",
-                session_id, STUDY_GROUP_AUTO_EXPIRE_DELAY,
+                "Group session %s auto-expired after %ds with no participants",
+                session_id, GROUP_SESSION_AUTO_EXPIRE_DELAY,
             )
 
     @staticmethod
     @database_sync_to_async
     def _try_auto_end(session_id: str) -> bool:
-        from .models import StudyGroupSession
+        from .models import GroupSession
         try:
-            session = StudyGroupSession.objects.get(pk=session_id)
-        except StudyGroupSession.DoesNotExist:
+            session = GroupSession.objects.get(pk=session_id)
+        except GroupSession.DoesNotExist:
             return False
         if session.status != "live":
             return False
@@ -318,14 +318,14 @@ class StudyGroupChatConsumer(AsyncWebsocketConsumer):
             return False
         if session.active_connections > 0:
             return False
-        from .study_group_views import _end_study_group_internal
-        return _end_study_group_internal(session, reason="auto_expired_all_left")
+        from .group_session_views import _end_group_session_internal
+        return _end_group_session_internal(session, reason="auto_expired_all_left")
 
 
 # Back-compat alias — code outside this module that imported the old name
 # can keep working until callers are migrated. Routing.py now uses the new
 # name directly.
-StudyGroupPresenceConsumer = StudyGroupChatConsumer
+GroupSessionPresenceConsumer = GroupSessionChatConsumer
 
 class UserNotificationConsumer(AsyncWebsocketConsumer):
     """

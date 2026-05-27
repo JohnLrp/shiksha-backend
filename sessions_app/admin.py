@@ -3,8 +3,8 @@ from .models import (
     PrivateSession,
     SessionParticipant,
     ChatMessage,
-    StudyGroupSession,
-    StudyGroupInvite,
+    GroupSession,
+    GroupSessionInvite,
 )
 
 
@@ -130,10 +130,10 @@ class ChatMessageAdmin(admin.ModelAdmin):
 
 
 # ---------------------------------------------------------
-# Study Group admin
+# Group Session admin
 # ---------------------------------------------------------
-class StudyGroupInviteInline(admin.TabularInline):
-    model = StudyGroupInvite
+class GroupSessionInviteInline(admin.TabularInline):
+    model = GroupSessionInvite
     extra = 0
     readonly_fields = (
         "user", "invite_role", "status", "decline_count",
@@ -142,8 +142,8 @@ class StudyGroupInviteInline(admin.TabularInline):
     can_delete = False
 
 
-@admin.register(StudyGroupSession)
-class StudyGroupSessionAdmin(admin.ModelAdmin):
+@admin.register(GroupSession)
+class GroupSessionAdmin(admin.ModelAdmin):
     list_display = (
         "id", "subject_name", "host", "status",
         "scheduled_date", "scheduled_time", "duration_minutes",
@@ -159,11 +159,11 @@ class StudyGroupSessionAdmin(admin.ModelAdmin):
         "active_connections", "all_left_at", "room_name",
     )
     ordering = ("-created_at",)
-    inlines = [StudyGroupInviteInline]
+    inlines = [GroupSessionInviteInline]
 
 
-@admin.register(StudyGroupInvite)
-class StudyGroupInviteAdmin(admin.ModelAdmin):
+@admin.register(GroupSessionInvite)
+class GroupSessionInviteAdmin(admin.ModelAdmin):
     list_display = (
         "id", "session", "user", "invite_role", "status",
         "decline_count", "responded_at",

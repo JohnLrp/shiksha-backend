@@ -1,7 +1,7 @@
 from django.urls import re_path
 from .consumers import (
     PrivateSessionChatConsumer,
-    StudyGroupChatConsumer,
+    GroupSessionChatConsumer,
     UserNotificationConsumer,
 )
 
@@ -16,11 +16,11 @@ websocket_urlpatterns = [
         r"ws/private-session/notify/$",
         UserNotificationConsumer.as_asgi(),
     ),
-    # Per-session chat + connection tracking (study groups)
+    # Per-session chat + connection tracking (group sessions)
     # Path matches the front-end's chatConfig.wsPath:
-    #   /ws/study-group/<session_id>/chat/
+    #   /ws/group-session/<session_id>/chat/
     re_path(
-        r"ws/study-group/(?P<session_id>[^/]+)/chat/$",
-        StudyGroupChatConsumer.as_asgi(),
+        r"ws/group-session/(?P<session_id>[^/]+)/chat/$",
+        GroupSessionChatConsumer.as_asgi(),
     ),
 ]
