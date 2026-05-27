@@ -999,12 +999,17 @@ def join_group_session(request, session_id):
                 status=400,
             )
 
-        accepted_count = session.invites.filter(status="accepted").count()
-        if accepted_count < 1:
-            return Response(
-                {"error": "At least 1 invitee must accept before the room opens."},
-                status=400,
-            )
+        # Instant meetings skip the "at least 1 accepted invitee" gate —
+        # there are no invitees at create-time. Google-Meet-style: the host
+        # creates the room and walks straight in; participants join later
+        # via the shareable link.
+        if not is_instant:
+            accepted_count = session.invites.filter(status="accepted").count()
+            if accepted_count < 1:
+                return Response(
+                    {"error": "At least 1 invitee must accept before the room opens."},
+                    status=400,
+                )
 
         # Lock the row inside the atomic block so concurrent /join/ calls
         # from (somehow) two host clients can't both flip the status.
