@@ -1370,3 +1370,157 @@ def set_admit_mode(request, session_id):
     session.admit_mode = mode
     session.save(update_fields=["admit_mode", "updated_at"])
     return Response({"admit_mode": session.admit_mode}, status=http_status.HTTP_200_OK)
+
+
+# ---------------------------------------------------------------------------
+# Join by code — look up a session by its short_code (or UUID) and return
+# enough detail for the frontend to navigate to /group-session/live/<id>.
+# Authentication is enforced via IsAuthenticated; the paywall stub still
+# applies. Token issuance and the room-open side effects still happen in
+# /join/ — this endpoint is just a lookup so the user can paste a code
+# instead of a full URL.
+# ---------------------------------------------------------------------------
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def join_by_code(request):
+    """Resolve a room code (or UUID) to a GroupSession and return its id.
+
+    Request body:  { "code": "xyz-abcd-efg" }    or    { "code": "<uuid>" }
+
+    Responses:
+      200 { session_id, short_code, status, session_type, host_id }
+      400 if code missing / malformed
+      403 if user is not entitled (paywall stub)
+      404 if no session matches OR if it's already terminal (so a stale
+          link doesn't drop the joiner into a dead UUID).
+    """
+    if not _is_paid_user(request.user):
+        return Response(
+            {"error": "Your account is not eligible to join meetings."},
+            status=http_status.HTTP_403_FORBIDDEN,
+        )
+
+    raw = (request.data.get("code") or "").strip()
+    if not raw:
+        return Response(
+            {"error": "A room code is required."},
+            status=http_status.HTTP_400_BAD_REQUEST,
+        )
+
+    # Normalize: codes are lowercase; full URLs get reduced to the last path
+    # segment so users can paste either format.
+    code = raw.lower()
+    if "/" in code:
+        code = code.rstrip("/").split("/")[-1]
+
+    # Try short_code first, then fall back to UUID lookup (so older sessions
+    # without a short_code can still be joined by full id from the URL).
+    session = GroupSession.objects.filter(short_code=code).first()
+    if session is None:
+        import uuid as _uuid
+        try:
+            uid = _uuid.UUID(code)
+        except (TypeError, ValueError):
+            uid = None
+        if uid is not None:
+            session = GroupSession.objects.filter(pk=uid).first()
+
+    if session is None:
+        return Response(
+            {"error": "No room found for that code."},
+            status=http_status.HTTP_404_NOT_FOUND,
+        )
+
+    if session.status in ("cancelled", "completed", "expired"):
+        return Response(
+            {"error": f"This room is {session.status} and can no longer be joined."},
+            status=http_status.HTTP_404_NOT_FOUND,
+        )
+
+    return Response({
+        "session_id": str(session.id),
+        "short_code": session.short_code,
+        "status": session.status,
+        "session_type": session.session_type,
+        "host_id": str(session.host_id) if session.host_id else None,
+    })
+
+
+# ---------------------------------------------------------------------------
+# Join by code — look up a session by its short_code (or UUID) and return
+# enough detail for the frontend to navigate to /group-session/live/<id>.
+# Authentication is enforced via IsAuthenticated; the paywall stub still
+# applies. Token issuance and the room-open side effects still happen in
+# /join/ — this endpoint is just a lookup so the user can paste a code
+# instead of a full URL.
+# ---------------------------------------------------------------------------
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def join_by_code(request):
+    """Resolve a room code (or UUID) to a GroupSession and return its id.
+
+    Request body:  { "code": "xyz-abcd-efg" }    or    { "code": "<uuid>" }
+
+    Responses:
+      200 { session_id, short_code, status, session_type, host_id }
+      400 if code missing / malformed
+      403 if user is not entitled (paywall stub)
+      404 if no session matches OR if it's already terminal (so a stale
+          link doesn't drop the joiner into a dead UUID).
+    """
+    if not _is_paid_user(request.user):
+        return Response(
+            {"error": "Your account is not eligible to join meetings."},
+            status=http_status.HTTP_403_FORBIDDEN,
+        )
+
+    raw = (request.data.get("code") or "").strip()
+    if not raw:
+        return Response(
+            {"error": "A room code is required."},
+            status=http_status.HTTP_400_BAD_REQUEST,
+        )
+
+    # Normalize: codes are lowercase; full URLs get reduced to the last
+    # path segment so users can paste either format.
+    code = raw.lower()
+    if "/" in code:
+        code = code.rstrip("/").split("/")[-1]
+
+    # Try short_code first, then fall back to UUID lookup (so older
+    # sessions without a short_code can still be joined by full id).
+    session = GroupSession.objects.filter(short_code=code).first()
+    if session is None:
+        import uuid as _uuid
+        try:
+            uid = _uuid.UUID(code)
+        except (TypeError, ValueError):
+            uid = None
+        if uid is not None:
+            session = GroupSession.objects.filter(pk=uid).first()
+
+    if session is None:
+        return Response(
+            {"error": "No room found for that code."},
+            status=http_status.HTTP_404_NOT_FOUND,
+        )
+
+    if session.status in ("cancelled", "completed", "expired"):
+        return Response(
+            {"error": f"This room is {session.status} and can no longer be joined."},
+            status=http_status.HTTP_404_NOT_FOUND,
+        )
+
+    return Response({
+        "session_id": str(session.id),
+        "short_code": session.short_code,
+        "status": session.status,
+        "session_type": session.session_type,
+        "host_id": str(session.host_id) if session.host_id else None,
+    })
+None,
+    })

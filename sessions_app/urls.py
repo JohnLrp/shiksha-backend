@@ -64,6 +64,15 @@ urlpatterns = [
     path("group-sessions/history/clear/",
          gs_views.clear_my_group_session_history,
          name="group-session-history-clear"),
+
+    # --- Instant Meeting + lookup-by-code + host controls ---
+    # Declared BEFORE the <uuid:session_id>/ detail route so URL dispatch
+    # doesn't try to parse "instant" / "join-by-code" as a UUID.
+    path("group-sessions/instant/", gs_views.instant_create,
+         name="group-session-instant-create"),
+    path("group-sessions/join-by-code/", gs_views.join_by_code,
+         name="group-session-join-by-code"),
+
     path("group-sessions/<uuid:session_id>/", gs_views.group_session_detail,
          name="group-session-detail"),
     path("group-sessions/<uuid:session_id>/hide/",
@@ -85,25 +94,12 @@ urlpatterns = [
          name="group-session-cancel"),
     path("group-sessions/<uuid:session_id>/join/", gs_views.join_group_session,
          name="group-session-join"),
-
-    # --- Instant Meeting + host controls (new) ---
-    path("group-sessions/instant/", gs_views.instant_create,
-         name="group-session-instant-create"),
     path("group-sessions/<uuid:session_id>/end/", gs_views.end_group_session,
          name="group-session-end"),
     path("group-sessions/<uuid:session_id>/admit-mode/", gs_views.set_admit_mode,
          name="group-session-admit-mode"),
 
     # --- Group-session chat ---
-    # Mirrors the private-session chat endpoints. WS path lives in
-    # routing.py at /ws/group-session/<id>/chat/.
-    path("group-sessions/<uuid:session_id>/chat/",
-         gs_views.group_session_chat_messages,
-         name="group-session-chat"),
-    path("group-sessions/<uuid:session_id>/chat/send/",
-         gs_views.send_group_session_chat_message,
-         name="group-session-chat-send"),
-]
     # Mirrors the private-session chat endpoints. WS path lives in
     # routing.py at /ws/group-session/<id>/chat/.
     path("group-sessions/<uuid:session_id>/chat/",
