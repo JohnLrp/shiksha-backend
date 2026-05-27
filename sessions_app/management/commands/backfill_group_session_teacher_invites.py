@@ -1,30 +1,30 @@
 """
-Idempotent one-off (safe to re-run) backfill: ensure every StudyGroupSession
-that has ``invited_teacher_id`` set also has a matching ``StudyGroupInvite``
+Idempotent one-off (safe to re-run) backfill: ensure every GroupSession
+that has ``invited_teacher_id`` set also has a matching ``GroupSessionInvite``
 row with ``invite_role='teacher'``. Older groups created before that line
-landed in ``create_study_group`` won't have it, which is why the teacher
+landed in ``create_group_session`` won't have it, which is why the teacher
 dashboard's Accept/Decline buttons fail to appear for them — `myInvite` is
 never found.
 
 Usage:
-    python manage.py backfill_study_group_teacher_invites
+    python manage.py backfill_group_session_teacher_invites
 """
 
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
-from sessions_app.models import StudyGroupSession, StudyGroupInvite
+from sessions_app.models import GroupSession, GroupSessionInvite
 
 
 class Command(BaseCommand):
     help = (
-        "Create missing teacher StudyGroupInvite rows for legacy study "
+        "Create missing teacher GroupSessionInvite rows for legacy study "
         "groups whose invited_teacher_id was set but never had a matching "
         "invite row. Idempotent and safe to re-run."
     )
 
     def handle(self, *args, **options):
-        candidates = StudyGroupSession.objects.filter(
+        candidates = GroupSession.objects.filter(
             invited_teacher_id__isnull=False,
         ).only("id", "invited_teacher_id")
 
@@ -32,14 +32,14 @@ class Command(BaseCommand):
         skipped = 0
         for session in candidates:
             with transaction.atomic():
-                exists = StudyGroupInvite.objects.filter(
+                exists = GroupSessionInvite.objects.filter(
                     session_id=session.id,
                     user_id=session.invited_teacher_id,
                 ).exists()
                 if exists:
                     skipped += 1
                     continue
-                StudyGroupInvite.objects.create(
+                GroupSessionInvite.objects.create(
                     session_id=session.id,
                     user_id=session.invited_teacher_id,
                     invite_role="teacher",

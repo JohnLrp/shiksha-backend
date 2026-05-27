@@ -17,26 +17,26 @@ from datetime import datetime, timedelta
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 
-from sessions_app.models import PrivateSession, StudyGroupSession
+from sessions_app.models import PrivateSession, GroupSession
 from sessions_app.views import _end_session_internal
 
 
 # Must match AUTO_EXPIRE_DELAY in consumers.py
 GRACE_PERIOD = timedelta(minutes=5)
-# Must match STUDY_GROUP_AUTO_EXPIRE_DELAY in consumers.py
-STUDY_GROUP_GRACE_PERIOD = timedelta(minutes=7)
-# How long a scheduled-but-never-opened study group lingers on the
+# Must match GROUP_SESSION_AUTO_EXPIRE_DELAY in consumers.py
+GROUP_SESSION_GRACE_PERIOD = timedelta(minutes=7)
+# How long a scheduled-but-never-opened group session lingers on the
 # Invitations tab before being marked "Not attended" and moved to
 # History. Measured from scheduled_date + scheduled_time.
-STUDY_GROUP_UNATTENDED_GRACE = timedelta(hours=6)
+GROUP_SESSION_UNATTENDED_GRACE = timedelta(hours=6)
 
 
 class Command(BaseCommand):
     help = (
         "Auto-end private sessions where all participants left 5+ minutes "
-        "ago, and study groups where all participants left 7+ minutes ago. "
-        "Also hard-expires study groups whose selected duration has elapsed, "
-        "and flags scheduled study groups that nobody attended within 6h "
+        "ago, and group sessions where all participants left 7+ minutes ago. "
+        "Also hard-expires group sessions whose selected duration has elapsed, "
+        "and flags scheduled group sessions that nobody attended within 6h "
         "of their start time."
     )
 
@@ -64,52 +64,52 @@ class Command(BaseCommand):
         else:
             self.stdout.write("No orphaned sessions found.")
 
-        # ── Study groups: idle cleanup ───────────────────────────────
-        from sessions_app.study_group_views import _end_study_group_internal
+        # ── Group sessions: idle cleanup ───────────────────────────────
+        from sessions_app.group_session_views import _end_group_session_internal
 
-        sg_cutoff = timezone.now() - STUDY_GROUP_GRACE_PERIOD
-        sg_orphaned = StudyGroupSession.objects.filter(
+        gs_cutoff = timezone.now() - GROUP_SESSION_GRACE_PERIOD
+        gs_orphaned = GroupSession.objects.filter(
             status="live",
             all_left_at__isnull=False,
-            all_left_at__lte=sg_cutoff,
+            all_left_at__lte=gs_cutoff,
             active_connections__lte=0,
         )
-        sg_count = 0
-        for session in sg_orphaned:
-            if _end_study_group_internal(session, reason="cleanup_command_idle"):
-                sg_count += 1
+        gs_count = 0
+        for session in gs_orphaned:
+            if _end_group_session_internal(session, reason="cleanup_command_idle"):
+                gs_count += 1
                 self.stdout.write(
-                    self.style.SUCCESS(f"  Auto-ended study group {session.id}")
+                    self.style.SUCCESS(f"  Auto-ended group session {session.id}")
                 )
 
-        # ── Study groups: hard-duration safety net ───────────────────
+        # ── Group sessions: hard-duration safety net ───────────────────
         now = timezone.now()
-        live = StudyGroupSession.objects.filter(
+        live = GroupSession.objects.filter(
             status="live", room_started_at__isnull=False,
         )
-        sg_hard = 0
+        gs_hard = 0
         for session in live:
             end_at = session.room_started_at + timedelta(minutes=session.duration_minutes)
             if now >= end_at:
-                if _end_study_group_internal(session, reason="cleanup_command_duration"):
-                    sg_hard += 1
+                if _end_group_session_internal(session, reason="cleanup_command_duration"):
+                    gs_hard += 1
                     self.stdout.write(
                         self.style.SUCCESS(
-                            f"  Duration-expired study group {session.id}"
+                            f"  Duration-expired group session {session.id}"
                         )
                     )
 
-        # ── Study groups: unattended grace window ────────────────────
-        # A study group that was scheduled but never opened (nobody
+        # ── Group sessions: unattended grace window ────────────────────
+        # A group session that was scheduled but never opened (nobody
         # joined) lingers in the Invitations / Upcoming tabs for up to
-        # STUDY_GROUP_UNATTENDED_GRACE after its scheduled start. After
+        # GROUP_SESSION_UNATTENDED_GRACE after its scheduled start. After
         # that we flag it "expired" and leave `cancel_reason` empty so
         # the frontend can show "Not attended" (the distinguishing
         # marker is status == 'expired' AND room_started_at is NULL).
-        scheduled_groups = StudyGroupSession.objects.filter(
+        scheduled_groups = GroupSession.objects.filter(
             status="scheduled", room_started_at__isnull=True,
         )
-        sg_unattended = 0
+        gs_unattended = 0
         for session in scheduled_groups:
             try:
                 scheduled_dt = timezone.make_aware(
@@ -124,25 +124,25 @@ class Command(BaseCommand):
                 )
                 continue
 
-            if now >= scheduled_dt + STUDY_GROUP_UNATTENDED_GRACE:
+            if now >= scheduled_dt + GROUP_SESSION_UNATTENDED_GRACE:
                 session.status = "expired"
                 session.ended_at = now
                 session.save(update_fields=["status", "ended_at", "updated_at"])
-                sg_unattended += 1
+                gs_unattended += 1
                 self.stdout.write(
                     self.style.SUCCESS(
-                        f"  Marked study group {session.id} as Not attended"
+                        f"  Marked group session {session.id} as Not attended"
                     )
                 )
 
-        total_sg = sg_count + sg_hard + sg_unattended
-        if total_sg:
+        total_gs = gs_count + gs_hard + gs_unattended
+        if total_gs:
             self.stdout.write(
                 self.style.SUCCESS(
-                    f"Cleaned up {total_sg} study group(s) "
-                    f"({sg_count} idle, {sg_hard} duration, "
-                    f"{sg_unattended} not attended)."
+                    f"Cleaned up {total_gs} group session(s) "
+                    f"({gs_count} idle, {gs_hard} duration, "
+                    f"{gs_unattended} not attended)."
                 )
             )
         else:
-            self.stdout.write("No orphaned study groups found.")
+            self.stdout.write("No orphaned group sessions found.")

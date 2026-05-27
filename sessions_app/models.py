@@ -188,33 +188,33 @@ class ChatMessage(models.Model):
 
 
 # ---------------------------------------------------------------------------
-# Study-group chat
+# Group-session chat
 #
 # A separate table from ChatMessage rather than a generic FK because:
 #   1. ChatMessage has a hard FK to PrivateSession in the DB and changing
 #      that to nullable would touch a lot of existing query paths.
-#   2. Per-session-type retention rules differ — study-group messages are
+#   2. Per-session-type retention rules differ — group-session messages are
 #      deleted from the DB the moment the room ends (per product spec
 #      "the chat is stored in the live room until it closes, then it can
 #      be deleted from the database only after the room is ended"),
 #      whereas private-session messages persist with the row until the
 #      session is fully cleaned up.
-# Cleanup happens in study_group_views._end_study_group_internal which
-# bulk-deletes StudyGroupChatMessage.objects.filter(session=...).
+# Cleanup happens in group_session_views._end_group_session_internal which
+# bulk-deletes GroupSessionChatMessage.objects.filter(session=...).
 # ---------------------------------------------------------------------------
-class StudyGroupChatMessage(models.Model):
-    """Chat messages scoped to a single live StudyGroupSession."""
+class GroupSessionChatMessage(models.Model):
+    """Chat messages scoped to a single live GroupSession."""
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     session = models.ForeignKey(
-        "StudyGroupSession",
+        "GroupSession",
         on_delete=models.CASCADE,
         related_name="chat_messages",
     )
     sender = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
-        related_name="study_group_messages",
+        related_name="group_session_messages",
     )
     sender_name = models.CharField(max_length=255)
     # "host" / "teacher" / "student" — the in-room badge shown to peers.
@@ -229,11 +229,11 @@ class StudyGroupChatMessage(models.Model):
         ]
 
     def __str__(self):
-        return f"SGChat in {self.session_id} by {self.sender_name}"
+        return f"GSChat in {self.session_id} by {self.sender_name}"
 
 
 # ===========================================================================
-# STUDY GROUPS
+# GROUP SESSIONS
 # ===========================================================================
 # Completely separate tables from PrivateSession so the existing
 # private-session flow remains untouched and every query on this feature is
@@ -242,9 +242,9 @@ class StudyGroupChatMessage(models.Model):
 # cleanup-command logic can be reused.
 
 
-class StudyGroupSession(models.Model):
+class GroupSession(models.Model):
     """
-    A student-initiated study group room.
+    A student-initiated group session room.
 
     Lifecycle:
         scheduled  → live  → completed
@@ -267,36 +267,76 @@ class StudyGroupSession(models.Model):
         (30, "30 minutes"),
         (45, "45 minutes"),
         (60, "1 hour"),
+        # Instant meetings default to a longer window since they're not
+        # pre-scheduled. The duration is still enforced from room_started_at.
+        (180, "3 hours"),
+    ]
+
+    # Scheduled (Create Group Session flow) vs Instant (Create Instant Meeting).
+    # Instant meetings skip the invite-and-accept gating entirely — the room is
+    # opened at the moment of creation and joinable by anyone with the link
+    # who passes the auth/paid checks.
+    SESSION_TYPE_CHOICES = [
+        ("scheduled", "Scheduled"),
+        ("instant", "Instant"),
+    ]
+
+    # Admit mode controls how non-host participants enter the room.
+    #   open  — anyone with a valid token joins directly (default, current behavior)
+    #   lobby — non-hosts go through a host-approval queue (Google-Meet-style)
+    ADMIT_MODE_CHOICES = [
+        ("open", "Allow anyone"),
+        ("lobby", "Admit Users"),
     ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    # Human-readable short code shown in the meeting-ready dialog and used
+    # as the shareable suffix in the "Add others" copyable link. Generated
+    # at create-time. Distinct from the UUID PK so the URL is friendly.
+    short_code = models.CharField(
+        max_length=20, unique=True, blank=True, default="",
+        help_text="Short shareable code (e.g. 'zfk-pbmc-rxd').",
+    )
 
     # --- Parties ---
     host = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
-        related_name="hosted_study_groups",
+        related_name="hosted_group_sessions",
     )
     # Optional teacher link; if the host invited a teacher, this is the
-    # target.  Acceptance is tracked in the StudyGroupInvite row.
+    # target.  Acceptance is tracked in the GroupSessionInvite row.
     invited_teacher = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        related_name="invited_study_groups",
+        related_name="invited_group_sessions",
     )
 
     # --- Academic scope (mirror how PrivateSession stores subject) ---
     # We keep a FK to the actual Subject so student/teacher pools can be
     # resolved at join-time *and* store the denormalised name for history.
+    # Subject is OPTIONAL for instant meetings (they're not tied to a course),
+    # but REQUIRED for scheduled group sessions — enforced in the view layer.
     subject = models.ForeignKey(
         "courses.Subject",
         on_delete=models.PROTECT,
-        related_name="study_groups",
+        null=True,
+        blank=True,
+        related_name="group_sessions",
     )
-    subject_name = models.CharField(max_length=255)
+    subject_name = models.CharField(max_length=255, blank=True, default="")
     course_title = models.CharField(max_length=255, blank=True, default="")
+
+    # Type discriminator + admit gating.
+    session_type = models.CharField(
+        max_length=20, choices=SESSION_TYPE_CHOICES, default="scheduled"
+    )
+    admit_mode = models.CharField(
+        max_length=10, choices=ADMIT_MODE_CHOICES, default="open"
+    )
 
     topic = models.CharField(max_length=255, blank=True, default="")
 
@@ -308,9 +348,11 @@ class StudyGroupSession(models.Model):
     )
 
     # --- Capacity (host + invitees) ---
-    # Max invitees is 20.  Minimum 1 invitee must accept before the room
-    # will open.
-    max_invitees = models.PositiveIntegerField(default=20)
+    # Max invitees is 50 (bumped from 20 — room cap is host + invitees so
+    # 51 total participants per session). Minimum 1 invitee must accept
+    # before the room will open. Note: LiveKit Cloud free tier caps rooms
+    # at ~25 concurrent participants; self-hosted has no implicit cap.
+    max_invitees = models.PositiveIntegerField(default=50)
 
     # --- Lifecycle ---
     status = models.CharField(
@@ -341,7 +383,7 @@ class StudyGroupSession(models.Model):
     # ``cancelled`` lifecycle state.
     hidden_for = models.ManyToManyField(
         settings.AUTH_USER_MODEL,
-        related_name="hidden_study_groups",
+        related_name="hidden_group_sessions",
         blank=True,
     )
 
@@ -354,7 +396,7 @@ class StudyGroupSession(models.Model):
         ]
 
     def __str__(self):
-        return f"StudyGroup {self.id} — {self.subject_name} ({self.status})"
+        return f"GroupSession {self.id} — {self.subject_name} ({self.status})"
 
     # ---- convenience ----
     @property
@@ -364,12 +406,12 @@ class StudyGroupSession(models.Model):
         return datetime.combine(self.scheduled_date, self.scheduled_time)
 
 
-class StudyGroupInvite(models.Model):
+class GroupSessionInvite(models.Model):
     """
     One row per invited user (student or optional teacher).
 
     The host is *not* stored here (they're implicit via
-    ``StudyGroupSession.host``).  Invitees may be re-invited exactly once
+    ``GroupSession.host``).  Invitees may be re-invited exactly once
     after declining, enforced by ``decline_count <= 1`` and
     ``reinvited_at``.
     """
@@ -387,14 +429,14 @@ class StudyGroupInvite(models.Model):
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     session = models.ForeignKey(
-        StudyGroupSession,
+        GroupSession,
         on_delete=models.CASCADE,
         related_name="invites",
     )
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
-        related_name="study_group_invites",
+        related_name="group_session_invites",
     )
     invite_role = models.CharField(
         max_length=10, choices=INVITE_ROLE_CHOICES, default="student"
