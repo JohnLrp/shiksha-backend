@@ -4,6 +4,7 @@ from pathlib import Path
 from datetime import timedelta
 from corsheaders.defaults import default_headers
 from dotenv import load_dotenv
+MATERIAL_MAX_FILE_SIZE_MB = int(os.getenv("MATERIAL_MAX_FILE_SIZE_MB", "50"))
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")

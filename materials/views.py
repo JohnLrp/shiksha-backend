@@ -5,9 +5,11 @@ from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.parsers import MultiPartParser, FormParser
 from django.shortcuts import get_object_or_404
+from django.core.exceptions import ValidationError as DjangoValidationError
 
 from .models import StudyMaterial, MaterialFile
 from .serializers import StudyMaterialSerializer
+from .validators import validate_material_file
 from courses.models import Chapter
 from enrollments.models import Enrollment
 from livestream.services.notifications import push_ws_notification
@@ -86,7 +88,7 @@ class UploadStudyMaterial(APIView):
             file.material = material
             file.save()
 
-        # 🔥 Notify enrolled students via WebSocket
+        # Notify enrolled students via WebSocket
         course = chapter.subject.course
         students = Enrollment.objects.filter(
             course=course,
@@ -185,6 +187,10 @@ class StudyMaterialDetail(APIView):
         return Response(serializer.data)
 
 
+# ===============================
+# TEMP FILE UPLOAD (validated)
+# ===============================
+
 class UploadTempFile(APIView):
     permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser]
@@ -194,12 +200,17 @@ class UploadTempFile(APIView):
         if not file:
             return Response({"detail": "File required"}, status=400)
 
-        temp = MaterialFile.objects.create(
-            file=file,
-            material=None
-        )
+        try:
+            validate_material_file(file)
+        except DjangoValidationError as e:
+            return Response(
+                {"detail": " ".join(e.messages)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        temp = MaterialFile.objects.create(file=file, material=None)
         return Response({
             "id": str(temp.id),
             "file_name": temp.filename(),
-            "file_url": temp.file.url
+            "file_url": temp.file.url,
         }, status=201)

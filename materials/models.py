@@ -3,6 +3,8 @@ from django.db import models
 from django.conf import settings
 from courses.models import Chapter
 
+from .validators import validate_material_file
+
 
 class StudyMaterial(models.Model):
 
@@ -41,15 +43,20 @@ class MaterialFile(models.Model):
         StudyMaterial,
         on_delete=models.CASCADE,
         related_name="files",
-        null=True,  
+        null=True,
         blank=True
     )
 
-    file = models.FileField(upload_to="study_materials/")
+    file = models.FileField(
+        upload_to="study_materials/",
+        validators=[validate_material_file],
+    )
 
     uploaded_at = models.DateTimeField(auto_now_add=True)
 
     def filename(self):
+        if not self.file:
+            return "file"
         return self.file.name.split("/")[-1]
 
     def __str__(self):
