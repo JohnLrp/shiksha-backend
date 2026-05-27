@@ -13,26 +13,33 @@ class MaterialFileSerializer(serializers.ModelSerializer):
         fields = ["id", "file_url", "file_name", "file_size"]
 
     def get_file_name(self, obj):
-        return obj.filename()
+        try:
+            return obj.filename()
+        except (ValueError, AttributeError):
+            return None
 
     def get_file_url(self, obj):
+        if not obj.file:
+            return None
+        try:
+            url = obj.file.url
+        except ValueError:
+            return None
         request = self.context.get("request")
-        if request:
-            return request.build_absolute_uri(obj.file.url)
-        return obj.file.url
+        return request.build_absolute_uri(url) if request else url
 
     def get_file_size(self, obj):
         if not obj.file:
             return None
-
-        size = obj.file.size
-
+        try:
+            size = obj.file.size
+        except (FileNotFoundError, OSError):
+            return None
         if size < 1024:
             return f"{size} B"
-        elif size < 1024 * 1024:
+        if size < 1024 * 1024:
             return f"{round(size / 1024, 1)} KB"
-        else:
-            return f"{round(size / (1024 * 1024), 1)} MB"
+        return f"{round(size / (1024 * 1024), 1)} MB"
 
 
 class StudyMaterialSerializer(serializers.ModelSerializer):
@@ -48,7 +55,7 @@ class StudyMaterialSerializer(serializers.ModelSerializer):
             "description",
             "created_at",
             "chapter_title",
-            "files"
+            "files",
         ]
 
     def get_files(self, obj):
@@ -56,10 +63,10 @@ class StudyMaterialSerializer(serializers.ModelSerializer):
         return MaterialFileSerializer(
             obj.files.all(),
             many=True,
-            context={"request": request}
+            context={"request": request},
         ).data
 
     def get_chapter_title(self, obj):
         if obj.chapter:
             return obj.chapter.title
-        return obj.custom_chapter or "No chapter"
+        return getattr(obj, "custom_chapter", None) or "No chapter"
