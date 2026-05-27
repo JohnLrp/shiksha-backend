@@ -1,6 +1,6 @@
 from django.urls import path
 from . import views
-from . import study_group_views as sg_views
+from . import group_session_views as gs_views
 from .views import subject_teachers, subject_students  # 👈 add this
 
 urlpatterns = [
@@ -50,49 +50,66 @@ urlpatterns = [
     path("subjects/<uuid:subject_id>/students/", subject_students),
 
     # =========================================================
-    # Study Groups (separate namespace from private sessions)
+    # Group Sessions (separate namespace from private sessions)
     # =========================================================
-    path("study-groups/my-subjects/", sg_views.my_course_subjects,
-         name="study-group-my-subjects"),
-    path("study-groups/create/", sg_views.create_study_group,
-         name="study-group-create"),
-    path("study-groups/mine/", sg_views.my_study_groups,
-         name="study-group-mine"),
+    path("group-sessions/my-subjects/", gs_views.my_course_subjects,
+         name="group-session-my-subjects"),
+    path("group-sessions/create/", gs_views.create_group_session,
+         name="group-session-create"),
+    path("group-sessions/mine/", gs_views.my_group_sessions,
+         name="group-session-mine"),
     # Bulk "Clear History" — must be declared BEFORE the <uuid:session_id>/
     # detail route so URL dispatch doesn't try to parse "history" as a UUID
     # and return a 404.
-    path("study-groups/history/clear/",
-         sg_views.clear_my_study_group_history,
-         name="study-group-history-clear"),
-    path("study-groups/<uuid:session_id>/", sg_views.study_group_detail,
-         name="study-group-detail"),
-    path("study-groups/<uuid:session_id>/hide/",
-         sg_views.hide_study_group_for_me,
-         name="study-group-hide"),
-    path("study-groups/<uuid:session_id>/invite/", sg_views.invite_more,
-         name="study-group-invite-more"),
-    path("study-groups/<uuid:session_id>/reinvite/", sg_views.reinvite,
-         name="study-group-reinvite"),
-    path("study-groups/<uuid:session_id>/accept/", sg_views.accept_invite,
-         name="study-group-accept"),
-    path("study-groups/<uuid:session_id>/decline/", sg_views.decline_invite,
-         name="study-group-decline"),
+    path("group-sessions/history/clear/",
+         gs_views.clear_my_group_session_history,
+         name="group-session-history-clear"),
+    path("group-sessions/<uuid:session_id>/", gs_views.group_session_detail,
+         name="group-session-detail"),
+    path("group-sessions/<uuid:session_id>/hide/",
+         gs_views.hide_group_session_for_me,
+         name="group-session-hide"),
+    path("group-sessions/<uuid:session_id>/invite/", gs_views.invite_more,
+         name="group-session-invite-more"),
+    path("group-sessions/<uuid:session_id>/reinvite/", gs_views.reinvite,
+         name="group-session-reinvite"),
+    path("group-sessions/<uuid:session_id>/accept/", gs_views.accept_invite,
+         name="group-session-accept"),
+    path("group-sessions/<uuid:session_id>/decline/", gs_views.decline_invite,
+         name="group-session-decline"),
     # Un-accept — accepted invitee flips back to 'pending' before the
     # room opens (keeps their decline counter intact).
-    path("study-groups/<uuid:session_id>/unaccept/", sg_views.unaccept_invite,
-         name="study-group-unaccept"),
-    path("study-groups/<uuid:session_id>/cancel/", sg_views.cancel_study_group,
-         name="study-group-cancel"),
-    path("study-groups/<uuid:session_id>/join/", sg_views.join_study_group,
-         name="study-group-join"),
+    path("group-sessions/<uuid:session_id>/unaccept/", gs_views.unaccept_invite,
+         name="group-session-unaccept"),
+    path("group-sessions/<uuid:session_id>/cancel/", gs_views.cancel_group_session,
+         name="group-session-cancel"),
+    path("group-sessions/<uuid:session_id>/join/", gs_views.join_group_session,
+         name="group-session-join"),
 
-    # --- Study-group chat ---
+    # --- Instant Meeting + host controls (new) ---
+    path("group-sessions/instant/", gs_views.instant_create,
+         name="group-session-instant-create"),
+    path("group-sessions/<uuid:session_id>/end/", gs_views.end_group_session,
+         name="group-session-end"),
+    path("group-sessions/<uuid:session_id>/admit-mode/", gs_views.set_admit_mode,
+         name="group-session-admit-mode"),
+
+    # --- Group-session chat ---
     # Mirrors the private-session chat endpoints. WS path lives in
-    # routing.py at /ws/study-group/<id>/chat/.
-    path("study-groups/<uuid:session_id>/chat/",
-         sg_views.study_group_chat_messages,
-         name="study-group-chat"),
-    path("study-groups/<uuid:session_id>/chat/send/",
-         sg_views.send_study_group_chat_message,
-         name="study-group-chat-send"),
+    # routing.py at /ws/group-session/<id>/chat/.
+    path("group-sessions/<uuid:session_id>/chat/",
+         gs_views.group_session_chat_messages,
+         name="group-session-chat"),
+    path("group-sessions/<uuid:session_id>/chat/send/",
+         gs_views.send_group_session_chat_message,
+         name="group-session-chat-send"),
+]
+    # Mirrors the private-session chat endpoints. WS path lives in
+    # routing.py at /ws/group-session/<id>/chat/.
+    path("group-sessions/<uuid:session_id>/chat/",
+         gs_views.group_session_chat_messages,
+         name="group-session-chat"),
+    path("group-sessions/<uuid:session_id>/chat/send/",
+         gs_views.send_group_session_chat_message,
+         name="group-session-chat-send"),
 ]

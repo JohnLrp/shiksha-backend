@@ -1,7 +1,7 @@
 """
-Study Group API endpoints.
+Group Session API endpoints.
 
-All endpoints for the new Study Group feature live here so the existing
+All endpoints for the new Group Session feature live here so the existing
 ``views.py`` is untouched.  The notification-bell pattern mirrors
 ``_push_session_bell`` from ``views.py``; duplicated deliberately so
 changes to either feature's notification copy don't cross-contaminate.
@@ -22,15 +22,15 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from .models import StudyGroupSession, StudyGroupInvite, StudyGroupChatMessage
+from .models import GroupSession, GroupSessionInvite, GroupSessionChatMessage
 from .permissions import IsStudent
 from .serializers import get_user_name
-from .services.study_group_token import generate_study_group_token
-from .study_group_serializers import (
-    StudyGroupCreateSerializer,
-    StudyGroupDetailSerializer,
-    StudyGroupInviteMoreSerializer,
-    StudyGroupListSerializer,
+from .services.group_session_token import generate_group_session_token
+from .group_session_serializers import (
+    GroupSessionCreateSerializer,
+    GroupSessionDetailSerializer,
+    GroupSessionInviteMoreSerializer,
+    GroupSessionListSerializer,
 )
 
 User = get_user_model()
@@ -42,10 +42,10 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-def _sg_qs():
+def _gs_qs():
     """Base queryset with everything needed by the list serializer."""
     return (
-        StudyGroupSession.objects.select_related(
+        GroupSession.objects.select_related(
             "host", "host__profile",
             "invited_teacher", "invited_teacher__profile",
             "subject", "subject__course",
@@ -53,7 +53,7 @@ def _sg_qs():
         .prefetch_related(
             Prefetch(
                 "invites",
-                queryset=StudyGroupInvite.objects.select_related(
+                queryset=GroupSessionInvite.objects.select_related(
                     "user", "user__profile"
                 ),
             )
@@ -71,7 +71,7 @@ def _can_view(session, user):
 
 
 def _scheduled_aware_dt(session):
-    """Return the tz-aware scheduled start datetime for a study group.
+    """Return the tz-aware scheduled start datetime for a group session.
 
     The model stores scheduled_date (Date) + scheduled_time (Time); we
     combine them and interpret the result in the project's default
@@ -156,10 +156,10 @@ def _notify_user(user, title, session):
                 "id": str(session.id),
                 "is_read": False,
                 "created_at": activity.created_at.isoformat(),
-                "is_study_group": True,
+                "is_group_session": True,
             })
     except Exception:
-        logger.exception("Failed to push study-group notification")
+        logger.exception("Failed to push group-session notification")
 
 
 def _broadcast(session):
@@ -168,8 +168,8 @@ def _broadcast(session):
     if channel_layer is None:
         return
     # Re-fetch with prefetches so counts are correct
-    full = _sg_qs().get(pk=session.pk)
-    data = StudyGroupListSerializer(full).data
+    full = _gs_qs().get(pk=session.pk)
+    data = GroupSessionListSerializer(full).data
 
     user_ids = {str(session.host_id)}
     if session.invited_teacher_id:
@@ -187,10 +187,10 @@ def _broadcast(session):
             pass
 
 
-def _end_study_group_internal(session, reason="ended"):
+def _end_group_session_internal(session, reason="ended"):
     """Finalise a live session. Used by hard-duration task, idle cleanup, and cancel-live.
 
-    Per product spec, study-group chat persists only while the room is live —
+    Per product spec, group-session chat persists only while the room is live —
     on end, all chat messages for this session are dropped from the DB.
     Wrapped in atomic so we never end a session while leaving stale chat
     rows behind on a delete failure.
@@ -201,9 +201,9 @@ def _end_study_group_internal(session, reason="ended"):
         session.status = "completed"
         session.ended_at = timezone.now()
         session.save(update_fields=["status", "ended_at", "updated_at"])
-        deleted, _ = StudyGroupChatMessage.objects.filter(session=session).delete()
+        deleted, _ = GroupSessionChatMessage.objects.filter(session=session).delete()
     logger.info(
-        "StudyGroup %s ended (reason: %s) — purged %d chat msgs",
+        "GroupSession %s ended (reason: %s) — purged %d chat msgs",
         session.id, reason, deleted,
     )
     return True
@@ -212,9 +212,9 @@ def _end_study_group_internal(session, reason="ended"):
 def _schedule_hard_duration_cutoff(session):
     """Queue a Celery task that force-ends the room at duration expiry."""
     try:
-        from .study_group_tasks import hard_expire_study_group
+        from .group_session_tasks import hard_expire_group_session
         eta = session.room_started_at + timedelta(minutes=session.duration_minutes)
-        hard_expire_study_group.apply_async(args=[str(session.id)], eta=eta)
+        hard_expire_group_session.apply_async(args=[str(session.id)], eta=eta)
     except Exception:
         logger.exception("Failed to schedule hard-duration cutoff for %s", session.id)
 
@@ -264,8 +264,8 @@ def my_course_subjects(request):
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated, IsStudent])
-def create_study_group(request):
-    ser = StudyGroupCreateSerializer(data=request.data)
+def create_group_session(request):
+    ser = GroupSessionCreateSerializer(data=request.data)
     ser.is_valid(raise_exception=True)
     d = ser.validated_data
 
@@ -337,7 +337,7 @@ def create_study_group(request):
 
     # ── Create everything atomically ─────────────────────────────────
     with transaction.atomic():
-        session = StudyGroupSession.objects.create(
+        session = GroupSession.objects.create(
             host=request.user,
             invited_teacher=invited_teacher,
             subject=subject,
@@ -352,26 +352,26 @@ def create_study_group(request):
 
         invites = []
         for uid in valid_invitee_ids:
-            invites.append(StudyGroupInvite(
+            invites.append(GroupSessionInvite(
                 session=session, user_id=uid, invite_role="student",
             ))
         if invited_teacher:
-            invites.append(StudyGroupInvite(
+            invites.append(GroupSessionInvite(
                 session=session, user_id=invited_teacher.id, invite_role="teacher",
             ))
-        StudyGroupInvite.objects.bulk_create(invites)
+        GroupSessionInvite.objects.bulk_create(invites)
 
     # ── Notify each invitee ──────────────────────────────────────────
     host_name = get_user_name(request.user)
-    for inv in StudyGroupInvite.objects.filter(session=session).select_related("user"):
+    for inv in GroupSessionInvite.objects.filter(session=session).select_related("user"):
         if inv.invite_role == "teacher":
-            title = f"📚 {host_name} invited you to a {session.subject_name} study group"
+            title = f"📚 {host_name} invited you to a {session.subject_name} group session"
         else:
-            title = f"📚 {host_name} invited you to a {session.subject_name} study group"
+            title = f"📚 {host_name} invited you to a {session.subject_name} group session"
         _notify_user(inv.user, title, session)
 
-    full = _sg_qs().get(pk=session.pk)
-    return Response(StudyGroupDetailSerializer(full).data, status=201)
+    full = _gs_qs().get(pk=session.pk)
+    return Response(GroupSessionDetailSerializer(full).data, status=201)
 
 
 @api_view(["POST"])
@@ -379,10 +379,10 @@ def create_study_group(request):
 def invite_more(request, session_id):
     """Add more invitees after the fact (host only, while status=scheduled)."""
     try:
-        session = StudyGroupSession.objects.select_related(
+        session = GroupSession.objects.select_related(
             "subject", "subject__course"
         ).get(pk=session_id, host=request.user)
-    except StudyGroupSession.DoesNotExist:
+    except GroupSession.DoesNotExist:
         return Response({"error": "Session not found."}, status=404)
 
     if session.status != "scheduled":
@@ -391,7 +391,7 @@ def invite_more(request, session_id):
             status=400,
         )
 
-    ser = StudyGroupInviteMoreSerializer(data=request.data)
+    ser = GroupSessionInviteMoreSerializer(data=request.data)
     ser.is_valid(raise_exception=True)
     ids = [str(uid) for uid in ser.validated_data["invited_user_ids"]]
 
@@ -422,8 +422,8 @@ def invite_more(request, session_id):
     if not to_add_ids:
         return Response({"error": "No new valid invitees."}, status=400)
 
-    StudyGroupInvite.objects.bulk_create([
-        StudyGroupInvite(session=session, user_id=uid, invite_role="student")
+    GroupSessionInvite.objects.bulk_create([
+        GroupSessionInvite(session=session, user_id=uid, invite_role="student")
         for uid in to_add_ids
     ])
 
@@ -431,12 +431,12 @@ def invite_more(request, session_id):
     for inv in session.invites.filter(user_id__in=to_add_ids).select_related("user"):
         _notify_user(
             inv.user,
-            f"📚 {host_name} invited you to a {session.subject_name} study group",
+            f"📚 {host_name} invited you to a {session.subject_name} group session",
             session,
         )
 
-    full = _sg_qs().get(pk=session.pk)
-    return Response(StudyGroupDetailSerializer(full).data)
+    full = _gs_qs().get(pk=session.pk)
+    return Response(GroupSessionDetailSerializer(full).data)
 
 
 # ---------------------------------------------------------------------------
@@ -446,7 +446,7 @@ def invite_more(request, session_id):
 
 def _get_invite_for_user(session_id, user):
     return (
-        StudyGroupInvite.objects.select_related(
+        GroupSessionInvite.objects.select_related(
             "session", "session__host", "session__subject",
         )
         .filter(session_id=session_id, user=user)
@@ -476,7 +476,7 @@ def accept_invite(request, session_id):
     # by the cleanup command 6 hours later.
     if session.status == "scheduled" and _scheduled_aware_dt(session) <= timezone.now():
         return Response(
-            {"error": "This study group's start time has passed; you can no longer respond."},
+            {"error": "This group session's start time has passed; you can no longer respond."},
             status=400,
         )
 
@@ -484,7 +484,7 @@ def accept_invite(request, session_id):
     invite.responded_at = timezone.now()
     invite.save(update_fields=["status", "responded_at"])
 
-    # Notify the host (the user who initiated the study group request).
+    # Notify the host (the user who initiated the group session request).
     # Use a slightly different copy when a TEACHER accepts, so the host
     # knows the room can already be opened on their authority.
     responder_label = "Teacher" if invite.invite_role == "teacher" else ""
@@ -492,17 +492,17 @@ def accept_invite(request, session_id):
     if responder_label:
         title = (
             f"✅ {responder_label} {actor_name} accepted your "
-            f"{session.subject_name} study group"
+            f"{session.subject_name} group session"
         )
     else:
         title = (
-            f"✅ {actor_name} accepted your {session.subject_name} study group"
+            f"✅ {actor_name} accepted your {session.subject_name} group session"
         )
     _notify_user(session.host, title, session)
     _broadcast(session)
 
-    full = _sg_qs().get(pk=session.pk)
-    return Response(StudyGroupDetailSerializer(full).data)
+    full = _gs_qs().get(pk=session.pk)
+    return Response(GroupSessionDetailSerializer(full).data)
 
 
 @api_view(["POST"])
@@ -520,7 +520,7 @@ def decline_invite(request, session_id):
     # the accept_invite window so neither side can thrash a stale card.
     if session.status == "scheduled" and _scheduled_aware_dt(session) <= timezone.now():
         return Response(
-            {"error": "This study group's start time has passed; you can no longer respond."},
+            {"error": "This group session's start time has passed; you can no longer respond."},
             status=400,
         )
 
@@ -535,17 +535,17 @@ def decline_invite(request, session_id):
     if responder_label:
         title = (
             f"↩ {responder_label} {actor_name} declined your "
-            f"{session.subject_name} study group"
+            f"{session.subject_name} group session"
         )
     else:
         title = (
-            f"↩ {actor_name} declined your {session.subject_name} study group"
+            f"↩ {actor_name} declined your {session.subject_name} group session"
         )
     _notify_user(session.host, title, session)
     _broadcast(session)
 
-    full = _sg_qs().get(pk=session.pk)
-    return Response(StudyGroupDetailSerializer(full).data)
+    full = _gs_qs().get(pk=session.pk)
+    return Response(GroupSessionDetailSerializer(full).data)
 
 
 @api_view(["POST"])
@@ -553,8 +553,8 @@ def decline_invite(request, session_id):
 def reinvite(request, session_id):
     """Host re-invites a single user who previously declined (allowed once)."""
     try:
-        session = StudyGroupSession.objects.get(pk=session_id, host=request.user)
-    except StudyGroupSession.DoesNotExist:
+        session = GroupSession.objects.get(pk=session_id, host=request.user)
+    except GroupSession.DoesNotExist:
         return Response({"error": "Session not found."}, status=404)
 
     if session.status != "scheduled":
@@ -565,7 +565,7 @@ def reinvite(request, session_id):
     # After the start time has passed, the card is read-only on both sides.
     if _scheduled_aware_dt(session) <= timezone.now():
         return Response(
-            {"error": "This study group's start time has passed; you can no longer re-invite."},
+            {"error": "This group session's start time has passed; you can no longer re-invite."},
             status=400,
         )
 
@@ -596,13 +596,13 @@ def reinvite(request, session_id):
     host_name = get_user_name(request.user)
     _notify_user(
         invite.user,
-        f"📚 {host_name} re-invited you to their {session.subject_name} study group",
+        f"📚 {host_name} re-invited you to their {session.subject_name} group session",
         session,
     )
     _broadcast(session)
 
-    full = _sg_qs().get(pk=session.pk)
-    return Response(StudyGroupDetailSerializer(full).data)
+    full = _gs_qs().get(pk=session.pk)
+    return Response(GroupSessionDetailSerializer(full).data)
 
 
 # ---------------------------------------------------------------------------
@@ -639,7 +639,7 @@ def unaccept_invite(request, session_id):
         )
     if _scheduled_aware_dt(session) <= timezone.now():
         return Response(
-            {"error": "This study group's start time has passed; you can no longer change your response."},
+            {"error": "This group session's start time has passed; you can no longer change your response."},
             status=400,
         )
 
@@ -650,13 +650,13 @@ def unaccept_invite(request, session_id):
     # Let the host know someone just stepped back.
     _notify_user(
         session.host,
-        f"↩ {get_user_name(request.user)} is no longer attending your {session.subject_name} study group",
+        f"↩ {get_user_name(request.user)} is no longer attending your {session.subject_name} group session",
         session,
     )
     _broadcast(session)
 
-    full = _sg_qs().get(pk=session.pk)
-    return Response(StudyGroupDetailSerializer(full).data)
+    full = _gs_qs().get(pk=session.pk)
+    return Response(GroupSessionDetailSerializer(full).data)
 
 
 # ---------------------------------------------------------------------------
@@ -666,10 +666,10 @@ def unaccept_invite(request, session_id):
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated, IsStudent])
-def cancel_study_group(request, session_id):
+def cancel_group_session(request, session_id):
     try:
-        session = StudyGroupSession.objects.get(pk=session_id, host=request.user)
-    except StudyGroupSession.DoesNotExist:
+        session = GroupSession.objects.get(pk=session_id, host=request.user)
+    except GroupSession.DoesNotExist:
         return Response({"error": "Session not found."}, status=404)
 
     # Only the pre-launch window allows cancellation. Once the room has
@@ -690,18 +690,18 @@ def cancel_study_group(request, session_id):
     for inv in session.invites.select_related("user"):
         _notify_user(
             inv.user,
-            f"❌ {host_name} cancelled the {session.subject_name} study group",
+            f"❌ {host_name} cancelled the {session.subject_name} group session",
             session,
         )
     _broadcast(session)
 
-    full = _sg_qs().get(pk=session.pk)
-    return Response(StudyGroupDetailSerializer(full).data)
+    full = _gs_qs().get(pk=session.pk)
+    return Response(GroupSessionDetailSerializer(full).data)
 
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
-def my_study_groups(request):
+def my_group_sessions(request):
     """
     Tabs:
       ?tab=upcoming    → scheduled + live groups I host or am accepted into
@@ -719,7 +719,7 @@ def my_study_groups(request):
     tab = request.query_params.get("tab", "upcoming")
     user = request.user
 
-    base = _sg_qs()
+    base = _gs_qs()
 
     # Compute "past-time orphan" Q: a scheduled group whose start instant has
     # already elapsed but the room was never opened. Built from local date+time
@@ -786,23 +786,23 @@ def my_study_groups(request):
     # from a card click without re-fetching, so it needs ``invites`` populated.
     # Without this, teacher-side Accept/Decline buttons never render
     # (myStatus is null because invitesList is empty).
-    # Cost is zero: ``_sg_qs()`` already prefetches the invites + their users.
-    return Response(StudyGroupDetailSerializer(items, many=True).data)
+    # Cost is zero: ``_gs_qs()`` already prefetches the invites + their users.
+    return Response(GroupSessionDetailSerializer(items, many=True).data)
 
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
-def study_group_detail(request, session_id):
+def group_session_detail(request, session_id):
     try:
-        session = _sg_qs().get(pk=session_id)
-    except StudyGroupSession.DoesNotExist:
+        session = _gs_qs().get(pk=session_id)
+    except GroupSession.DoesNotExist:
         return Response({"error": "Session not found."}, status=404)
 
     if not _can_view(session, request.user):
         return Response(
-            {"error": "You do not have access to this study group."}, status=403
+            {"error": "You do not have access to this group session."}, status=403
         )
-    return Response(StudyGroupDetailSerializer(session).data)
+    return Response(GroupSessionDetailSerializer(session).data)
 
 
 # ---------------------------------------------------------------------------
@@ -814,21 +814,21 @@ def study_group_detail(request, session_id):
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
-def hide_study_group_for_me(request, session_id):
-    """Hide a single study group from MY History view.
+def hide_group_session_for_me(request, session_id):
+    """Hide a single group session from MY History view.
 
     Caller must have had access to the session (host / invited teacher /
     invitee). Adding the same user to ``hidden_for`` twice is a no-op (M2M
     ``add()`` is idempotent), so retries are safe.
     """
     try:
-        session = StudyGroupSession.objects.get(pk=session_id)
-    except StudyGroupSession.DoesNotExist:
+        session = GroupSession.objects.get(pk=session_id)
+    except GroupSession.DoesNotExist:
         return Response({"error": "Session not found."}, status=404)
 
     if not _can_view(session, request.user):
         return Response(
-            {"error": "You do not have access to this study group."}, status=403
+            {"error": "You do not have access to this group session."}, status=403
         )
 
     session.hidden_for.add(request.user)
@@ -837,14 +837,14 @@ def hide_study_group_for_me(request, session_id):
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
-def clear_my_study_group_history(request):
+def clear_my_group_session_history(request):
     """Bulk-hide history entries for the requesting user.
 
     Body shapes (both supported):
       {"all": true}                  → hide every history-tab session for me
       {"session_ids": [<uuid>, ...]} → hide just the listed set
 
-    Mirrors the History queryset built in ``my_study_groups`` so we never
+    Mirrors the History queryset built in ``my_group_sessions`` so we never
     hide a session the user couldn't already see in History. Returns the
     number of sessions actually affected (idempotent on already-hidden ones).
     """
@@ -864,7 +864,7 @@ def clear_my_study_group_history(request):
         Q(host=user) | Q(invites__user=user) | Q(invited_teacher=user)
     )
 
-    qs = StudyGroupSession.objects.filter(visible_to_me_q).filter(
+    qs = GroupSession.objects.filter(visible_to_me_q).filter(
         Q(status__in=["completed", "cancelled", "expired"]) | past_orphan_q
     ).distinct()
 
@@ -889,7 +889,7 @@ def clear_my_study_group_history(request):
 
     # M2M's through-table; use the reverse side so we issue exactly one
     # INSERT for each (session, user) pair that doesn't already exist.
-    user.hidden_study_groups.add(*target_ids)
+    user.hidden_group_sessions.add(*target_ids)
     return Response({"ok": True, "hidden_count": len(target_ids)})
 
 
@@ -900,7 +900,7 @@ def clear_my_study_group_history(request):
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
-def join_study_group(request, session_id):
+def join_group_session(request, session_id):
     """
     Returns a LiveKit token if the caller may join.
 
@@ -918,21 +918,34 @@ def join_study_group(request, session_id):
     # HTML 500 page (which is what the host saw when clicking START ROOM).
     # The row is locked INSIDE the atomic flip block below instead.
     try:
-        session = StudyGroupSession.objects.get(pk=session_id)
-    except StudyGroupSession.DoesNotExist:
+        session = GroupSession.objects.get(pk=session_id)
+    except GroupSession.DoesNotExist:
         return Response({"error": "Session not found."}, status=404)
 
     user = request.user
 
+    # Paywall gate — only paid dashboard users may consume LiveKit minutes.
+    # Currently a stub (see _is_paid_user) that defaults to True; wire it
+    # to your subscription model when entitlements land.
+    if not _is_paid_user(user):
+        return Response(
+            {"error": "Your account is not eligible to join meetings."},
+            status=http_status.HTTP_403_FORBIDDEN,
+        )
+
     # Auth check.
     #
-    # Roles in a study group:
+    # Roles in a group session:
     #   * Host:  the student who created the group. Implicitly accepted —
     #            no invite row exists for them. Only the host may flip the
     #            status from scheduled → live (start the room).
     #   * Invited teacher / invited student: must explicitly accept their
     #            own invite before they may join. They cannot start the
     #            room; they wait until the host opens it.
+    # Instant meetings (session_type='instant') skip the invite gate entirely:
+    # anyone authenticated and paid who has the link can join. The host is
+    # still the only one allowed to /end/ the room.
+    is_instant = (session.session_type == "instant")
     is_host = (session.host_id == user.id)
     invite = session.invites.filter(user=user).first()
     is_accepted_invitee = bool(invite and invite.status == "accepted")
@@ -944,9 +957,13 @@ def join_study_group(request, session_id):
     if is_host:
         # Implicit accept; no further gate.
         pass
+    elif is_instant:
+        # Open join for instant meetings — auth + paywall above are the only gates.
+        # (Admit-mode='lobby' is a Phase-2 addition; until then 'open' is enforced.)
+        pass
     elif invite is None:
         return Response(
-            {"error": "You are not a participant in this study group."},
+            {"error": "You are not a participant in this group session."},
             status=403,
         )
     elif invite.status == "declined":
@@ -977,7 +994,7 @@ def join_study_group(request, session_id):
     if session.status == "scheduled":
         if not is_host:
             return Response(
-                {"error": "Only the host can start this study group. "
+                {"error": "Only the host can start this group session. "
                           "Please wait until the host opens the room."},
                 status=400,
             )
@@ -995,14 +1012,14 @@ def join_study_group(request, session_id):
         # through to the live-already branch below.
         with transaction.atomic():
             session = (
-                StudyGroupSession.objects
+                GroupSession.objects
                 .select_for_update()
                 .get(pk=session.pk)
             )
             started_now = False
             if session.status == "scheduled":
                 session.status = "live"
-                session.room_name = f"study_group_{session.id}"
+                session.room_name = f"group_session_{session.id}"
                 session.room_started_at = now
                 session.active_connections = 0
                 session.all_left_at = None
@@ -1019,10 +1036,10 @@ def join_study_group(request, session_id):
     if session.room_started_at:
         hard_end = session.room_started_at + timedelta(minutes=session.duration_minutes)
         if now >= hard_end:
-            _end_study_group_internal(session, reason="duration_hit_on_join")
+            _end_group_session_internal(session, reason="duration_hit_on_join")
             _broadcast(session)
             return Response(
-                {"error": "This study group has ended."}, status=400
+                {"error": "This group session has ended."}, status=400
             )
 
     if not session.room_name:
@@ -1033,11 +1050,11 @@ def join_study_group(request, session_id):
     try:
         display_name = get_user_name(user)
         role = "host" if is_host else ("teacher" if is_invited_teacher else "student")
-        token = generate_study_group_token(
+        token = generate_group_session_token(
             user=user, session=session, display_name=display_name, role=role,
         )
     except Exception:
-        logger.exception("LiveKit token generation failed for study group")
+        logger.exception("LiveKit token generation failed for group session")
         return Response({"detail": "LiveKit error"}, status=500)
 
     if invite and not invite.joined_at:
@@ -1062,20 +1079,20 @@ def join_study_group(request, session_id):
 
 
 # ===========================================================================
-# CHAT ENDPOINTS  (study-group rooms only)
+# CHAT ENDPOINTS  (group-session rooms only)
 #
 # Mirrors private-session chat (views.session_chat_messages /
-# views.send_chat_message) but writes to StudyGroupChatMessage.  Auth gate
+# views.send_chat_message) but writes to GroupSessionChatMessage.  Auth gate
 # allows the host plus any accepted invitee.  Storage is purged the moment
-# the session ends — see _end_study_group_internal which bulk-deletes
-# StudyGroupChatMessage rows for that session.
+# the session ends — see _end_group_session_internal which bulk-deletes
+# GroupSessionChatMessage rows for that session.
 # ===========================================================================
 
 
 def _chat_participant_check(session, user):
     """
     Return (allowed, error_response_or_None).
-    A user may chat in a study-group room iff they are the host or have
+    A user may chat in a group-session room iff they are the host or have
     an 'accepted' invite for this session.
     """
     if session.host_id == user.id:
@@ -1102,11 +1119,11 @@ def _serialize_sg_chat_message(msg):
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
-def study_group_chat_messages(request, session_id):
-    """Return up to the last 200 chat messages for a study-group session."""
+def group_session_chat_messages(request, session_id):
+    """Return up to the last 200 chat messages for a group-session session."""
     try:
-        session = StudyGroupSession.objects.get(pk=session_id)
-    except StudyGroupSession.DoesNotExist:
+        session = GroupSession.objects.get(pk=session_id)
+    except GroupSession.DoesNotExist:
         return Response({"error": "Session not found."}, status=404)
 
     allowed, err = _chat_participant_check(session, request.user)
@@ -1114,7 +1131,7 @@ def study_group_chat_messages(request, session_id):
         return err
 
     msgs = (
-        StudyGroupChatMessage.objects
+        GroupSessionChatMessage.objects
         .filter(session=session)
         .order_by("created_at")[:200]
     )
@@ -1123,11 +1140,11 @@ def study_group_chat_messages(request, session_id):
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
-def send_study_group_chat_message(request, session_id):
+def send_group_session_chat_message(request, session_id):
     """Persist a chat message and broadcast it to all WS clients in the room."""
     try:
-        session = StudyGroupSession.objects.get(pk=session_id)
-    except StudyGroupSession.DoesNotExist:
+        session = GroupSession.objects.get(pk=session_id)
+    except GroupSession.DoesNotExist:
         return Response({"error": "Session not found."}, status=404)
 
     allowed, err = _chat_participant_check(session, request.user)
@@ -1160,7 +1177,7 @@ def send_study_group_chat_message(request, session_id):
     )
     role = "host" if is_host else ("teacher" if is_invited_teacher else "student")
 
-    msg = StudyGroupChatMessage.objects.create(
+    msg = GroupSessionChatMessage.objects.create(
         session=session,
         sender=user,
         sender_name=get_user_name(user),
@@ -1174,10 +1191,177 @@ def send_study_group_chat_message(request, session_id):
     if channel_layer is not None:
         try:
             async_to_sync(channel_layer.group_send)(
-                f"study_group_chat_{session.id}",
+                f"group_session_chat_{session.id}",
                 {"type": "chat_message", "data": payload},
             )
         except Exception:
-            logger.exception("Channel-layer broadcast failed for study group %s", session.id)
+            logger.exception("Channel-layer broadcast failed for group session %s", session.id)
 
     return Response(payload, status=http_status.HTTP_201_CREATED)
+
+
+# ===========================================================================
+# INSTANT MEETING + END SESSION + ADMIT MODE
+# ===========================================================================
+
+import secrets as _secrets
+
+
+def _generate_short_code():
+    """Return a Google-Meet-style 'xxx-yyyy-zzz' code unique in the DB."""
+    alphabet = "abcdefghijkmnpqrstuvwxyz"
+    for _ in range(8):
+        a = "".join(_secrets.choice(alphabet) for _ in range(3))
+        b = "".join(_secrets.choice(alphabet) for _ in range(4))
+        c = "".join(_secrets.choice(alphabet) for _ in range(3))
+        code = f"{a}-{b}-{c}"
+        if not GroupSession.objects.filter(short_code=code).exists():
+            return code
+    import uuid as _uuid
+    return f"gs-{_uuid.uuid4().hex[:10]}"
+
+
+def _is_paid_user(user):
+    """Paywall stub. Returns True for any authenticated user for now."""
+    if not user or not user.is_authenticated:
+        return False
+    explicit = getattr(user, "is_paid", None)
+    if explicit is not None:
+        return bool(explicit)
+    return True
+
+
+def _broadcast_session_ended(session, reason="ended"):
+    """Push a session_ended event to the live-room WS group."""
+    channel_layer = get_channel_layer()
+    if channel_layer is None:
+        return
+    try:
+        async_to_sync(channel_layer.group_send)(
+            f"group_session_chat_{session.id}",
+            {
+                "type": "session_ended",
+                "data": {
+                    "session_id": str(session.id),
+                    "reason": reason,
+                    "ended_at": timezone.now().isoformat(),
+                },
+            },
+        )
+    except Exception:
+        logger.exception("session_ended broadcast failed for %s", session.id)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def instant_create(request):
+    """One-click Instant Meeting; allowed for any authenticated paid user."""
+    if not _is_paid_user(request.user):
+        return Response(
+            {"error": "Your account is not eligible to start meetings."},
+            status=http_status.HTTP_403_FORBIDDEN,
+        )
+
+    now = timezone.now()
+    duration_minutes = int(request.data.get("duration_minutes") or 180)
+    if duration_minutes not in {30, 45, 60, 180}:
+        duration_minutes = 180
+
+    topic = (request.data.get("topic") or "").strip()[:255]
+
+    with transaction.atomic():
+        session = GroupSession.objects.create(
+            host=request.user,
+            invited_teacher=None,
+            subject=None,
+            subject_name="",
+            course_title="",
+            topic=topic or "Instant meeting",
+            scheduled_date=now.date(),
+            scheduled_time=now.time().replace(microsecond=0),
+            duration_minutes=duration_minutes,
+            session_type="instant",
+            admit_mode="open",
+            status="scheduled",
+            short_code=_generate_short_code(),
+        )
+
+    full = _gs_qs().get(pk=session.pk)
+    return Response(
+        GroupSessionDetailSerializer(full).data,
+        status=http_status.HTTP_201_CREATED,
+    )
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def end_group_session(request, session_id):
+    """Host-only: hard-end the room."""
+    try:
+        session = GroupSession.objects.get(pk=session_id)
+    except GroupSession.DoesNotExist:
+        return Response({"error": "Session not found."}, status=404)
+
+    if session.host_id != request.user.id:
+        return Response(
+            {"error": "Only the host can end this session."},
+            status=http_status.HTTP_403_FORBIDDEN,
+        )
+
+    if session.status in {"completed", "cancelled", "expired"}:
+        return Response(
+            {"status": session.status, "ended_at": session.ended_at},
+            status=http_status.HTTP_200_OK,
+        )
+
+    now = timezone.now()
+    with transaction.atomic():
+        session.status = "completed"
+        session.ended_at = now
+        session.all_left_at = now
+        session.active_connections = 0
+        session.save(update_fields=[
+            "status", "ended_at", "all_left_at", "active_connections", "updated_at",
+        ])
+        if session.session_type == "instant":
+            GroupSessionChatMessage.objects.filter(session=session).delete()
+
+    _broadcast_session_ended(session, reason="host_ended")
+
+    return Response(
+        {"status": session.status, "ended_at": session.ended_at.isoformat()},
+        status=http_status.HTTP_200_OK,
+    )
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def set_admit_mode(request, session_id):
+    """Host-only: toggle the room between 'open' and 'lobby' admit modes.
+
+    NOTE: the lobby (knock-to-enter) flow is not fully wired through to
+    the join handler yet — this endpoint persists the field so the host
+    UI toggle is functional, but join_group_session still admits all
+    accepted invitees. The lobby gate is a Phase-2 addition.
+    """
+    try:
+        session = GroupSession.objects.get(pk=session_id)
+    except GroupSession.DoesNotExist:
+        return Response({"error": "Session not found."}, status=404)
+
+    if session.host_id != request.user.id:
+        return Response(
+            {"error": "Only the host can change admit mode."},
+            status=http_status.HTTP_403_FORBIDDEN,
+        )
+
+    mode = (request.data.get("admit_mode") or "").strip().lower()
+    if mode not in {"open", "lobby"}:
+        return Response(
+            {"error": "admit_mode must be 'open' or 'lobby'."},
+            status=http_status.HTTP_400_BAD_REQUEST,
+        )
+
+    session.admit_mode = mode
+    session.save(update_fields=["admit_mode", "updated_at"])
+    return Response({"admit_mode": session.admit_mode}, status=http_status.HTTP_200_OK)

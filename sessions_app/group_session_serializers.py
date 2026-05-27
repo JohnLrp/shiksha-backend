@@ -1,5 +1,5 @@
 """
-Serializers for the Study Groups feature.
+Serializers for the Group Sessions feature.
 
 Kept in a dedicated module so nothing about the existing private-session
 serializers is affected.  Reuses `get_user_name` / `get_student_id` from
@@ -8,7 +8,7 @@ the original serializers module where useful.
 
 from rest_framework import serializers
 
-from .models import StudyGroupSession, StudyGroupInvite
+from .models import GroupSession, GroupSessionInvite
 from .serializers import get_user_name, get_student_id
 
 
@@ -17,7 +17,7 @@ from .serializers import get_user_name, get_student_id
 # ---------------------------------------------------------------------------
 
 
-class StudyGroupInviteSerializer(serializers.ModelSerializer):
+class GroupSessionInviteSerializer(serializers.ModelSerializer):
     """Shape used inside the detail/list payload, from the host's POV."""
 
     user_id = serializers.SerializerMethodField()
@@ -25,7 +25,7 @@ class StudyGroupInviteSerializer(serializers.ModelSerializer):
     student_id = serializers.SerializerMethodField()
 
     class Meta:
-        model = StudyGroupInvite
+        model = GroupSessionInvite
         fields = [
             "id",
             "user_id",
@@ -55,8 +55,8 @@ class StudyGroupInviteSerializer(serializers.ModelSerializer):
 # ---------------------------------------------------------------------------
 
 
-class StudyGroupListSerializer(serializers.ModelSerializer):
-    """Card-view payload returned by /study-groups/mine/ tabs."""
+class GroupSessionListSerializer(serializers.ModelSerializer):
+    """Card-view payload returned by /group-sessions/mine/ tabs."""
 
     host_name = serializers.SerializerMethodField()
     host_id = serializers.SerializerMethodField()
@@ -69,9 +69,12 @@ class StudyGroupListSerializer(serializers.ModelSerializer):
     declined_count = serializers.SerializerMethodField()
 
     class Meta:
-        model = StudyGroupSession
+        model = GroupSession
         fields = [
             "id",
+            "short_code",
+            "session_type",
+            "admit_mode",
             "subject_id",
             "subject_name",
             "course_id",
@@ -134,13 +137,13 @@ class StudyGroupListSerializer(serializers.ModelSerializer):
         return self._count_invites(obj, "declined")
 
 
-class StudyGroupDetailSerializer(StudyGroupListSerializer):
+class GroupSessionDetailSerializer(GroupSessionListSerializer):
     """List shape + full invite list."""
 
-    invites = StudyGroupInviteSerializer(many=True, read_only=True)
+    invites = GroupSessionInviteSerializer(many=True, read_only=True)
 
-    class Meta(StudyGroupListSerializer.Meta):
-        fields = StudyGroupListSerializer.Meta.fields + ["invites"]
+    class Meta(GroupSessionListSerializer.Meta):
+        fields = GroupSessionListSerializer.Meta.fields + ["invites"]
 
 
 # ---------------------------------------------------------------------------
@@ -148,15 +151,15 @@ class StudyGroupDetailSerializer(StudyGroupListSerializer):
 # ---------------------------------------------------------------------------
 
 
-class StudyGroupCreateSerializer(serializers.Serializer):
+class GroupSessionCreateSerializer(serializers.Serializer):
     """
-    Input for POST /study-groups/create/.
+    Input for POST /group-sessions/create/.
 
     * subject_id must belong to a course the host is enrolled in.
     * invited_teacher_id must teach `subject_id`.
     * invited_user_ids must all be students enrolled in the same course.
     * duration must be 30 / 45 / 60.
-    * 1 <= len(invited_user_ids) <= 20  (need at least 1 to be invitable;
+    * 1 <= len(invited_user_ids) <= 50  (need at least 1 to be invitable;
       room won't actually open until at least 1 accepts).
     """
 
@@ -171,7 +174,7 @@ class StudyGroupCreateSerializer(serializers.Serializer):
     invited_user_ids = serializers.ListField(
         child=serializers.UUIDField(),
         allow_empty=False,
-        max_length=20,
+        max_length=50,
     )
 
     def validate(self, data):
@@ -191,9 +194,9 @@ class StudyGroupCreateSerializer(serializers.Serializer):
             {str(uid) for uid in data["invited_user_ids"]}
         )
 
-        if len(data["invited_user_ids"]) > 20:
+        if len(data["invited_user_ids"]) > 50:
             raise serializers.ValidationError(
-                {"invited_user_ids": "Maximum 20 invitees."}
+                {"invited_user_ids": "Maximum 50 invitees."}
             )
         return data
 
@@ -203,7 +206,7 @@ class StudyGroupCreateSerializer(serializers.Serializer):
 # ---------------------------------------------------------------------------
 
 
-class StudyGroupInviteMoreSerializer(serializers.Serializer):
+class GroupSessionInviteMoreSerializer(serializers.Serializer):
     invited_user_ids = serializers.ListField(
         child=serializers.UUIDField(),
         allow_empty=False,
