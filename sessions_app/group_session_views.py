@@ -999,12 +999,17 @@ def join_group_session(request, session_id):
                 status=400,
             )
 
-        accepted_count = session.invites.filter(status="accepted").count()
-        if accepted_count < 1:
-            return Response(
-                {"error": "At least 1 invitee must accept before the room opens."},
-                status=400,
-            )
+        # Instant meetings skip the "at least 1 accepted invitee" gate —
+        # there are no invitees at create-time. Google-Meet-style: the host
+        # creates the room and walks straight in; participants join later
+        # via the shareable link.
+        if not is_instant:
+            accepted_count = session.invites.filter(status="accepted").count()
+            if accepted_count < 1:
+                return Response(
+                    {"error": "At least 1 invitee must accept before the room opens."},
+                    status=400,
+                )
 
         # Lock the row inside the atomic block so concurrent /join/ calls
         # from (somehow) two host clients can't both flip the status.
@@ -1282,9 +1287,23 @@ def instant_create(request):
             duration_minutes=duration_minutes,
             session_type="instant",
             admit_mode="open",
-            status="scheduled",
+            # Instant rooms open immediately — the host is dropped
+            # straight into a live room without the "at least 1 invitee
+            # must accept" gate that scheduled group sessions enforce.
+            status="live",
             short_code=_generate_short_code(),
         )
+        # Set the LiveKit room name + room_started_at at create time
+        # so the very first /join/ call goes straight to token issuance.
+        session.room_name = f"group_session_{session.id}"
+        session.room_started_at = now
+        session.active_connections = 0
+        session.all_left_at = None
+        session.save(update_fields=[
+            "room_name", "room_started_at", "active_connections",
+            "all_left_at", "status", "updated_at",
+        ])
+        _schedule_hard_duration_cutoff(session)
 
     full = _gs_qs().get(pk=session.pk)
     return Response(
@@ -1365,3 +1384,79 @@ def set_admit_mode(request, session_id):
     session.admit_mode = mode
     session.save(update_fields=["admit_mode", "updated_at"])
     return Response({"admit_mode": session.admit_mode}, status=http_status.HTTP_200_OK)
+
+
+# ---------------------------------------------------------------------------
+# Join by code — look up a session by its short_code (or UUID) and return
+# enough detail for the frontend to navigate to /group-session/live/<id>.
+# Authentication is enforced via IsAuthenticated; the paywall stub still
+# applies. Token issuance and the room-open side effects still happen in
+# /join/ — this endpoint is just a lookup so the user can paste a code
+# instead of a full URL.
+# ---------------------------------------------------------------------------
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def join_by_code(request):
+    """Resolve a room code (or UUID) to a GroupSession and return its id.
+
+    Request body:  { "code": "xyz-abcd-efg" }    or    { "code": "<uuid>" }
+
+    Responses:
+      200 { session_id, short_code, status, session_type, host_id }
+      400 if code missing / malformed
+      403 if user is not entitled (paywall stub)
+      404 if no session matches OR if it's already terminal (so a stale
+          link doesn't drop the joiner into a dead UUID).
+    """
+    if not _is_paid_user(request.user):
+        return Response(
+            {"error": "Your account is not eligible to join meetings."},
+            status=http_status.HTTP_403_FORBIDDEN,
+        )
+
+    raw = (request.data.get("code") or "").strip()
+    if not raw:
+        return Response(
+            {"error": "A room code is required."},
+            status=http_status.HTTP_400_BAD_REQUEST,
+        )
+
+    # Normalize: codes are lowercase; full URLs get reduced to the last path
+    # segment so users can paste either format.
+    code = raw.lower()
+    if "/" in code:
+        code = code.rstrip("/").split("/")[-1]
+
+    # Try short_code first, then fall back to UUID lookup (so older sessions
+    # without a short_code can still be joined by full id from the URL).
+    session = GroupSession.objects.filter(short_code=code).first()
+    if session is None:
+        import uuid as _uuid
+        try:
+            uid = _uuid.UUID(code)
+        except (TypeError, ValueError):
+            uid = None
+        if uid is not None:
+            session = GroupSession.objects.filter(pk=uid).first()
+
+    if session is None:
+        return Response(
+            {"error": "No room found for that code."},
+            status=http_status.HTTP_404_NOT_FOUND,
+        )
+
+    if session.status in ("cancelled", "completed", "expired"):
+        return Response(
+            {"error": f"This room is {session.status} and can no longer be joined."},
+            status=http_status.HTTP_404_NOT_FOUND,
+        )
+
+    return Response({
+        "session_id": str(session.id),
+        "short_code": session.short_code,
+        "status": session.status,
+        "session_type": session.session_type,
+        "host_id": str(session.host_id) if session.host_id else None,
+    })
