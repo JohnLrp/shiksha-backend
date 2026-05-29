@@ -1,6 +1,8 @@
 from .models import Stream
 from django.contrib import admin
-from .models import Course, Subject, Chapter, SubjectTeacher
+from django.db.models import Count, Q
+from django.utils import timezone
+from .models import Course, Subject, Chapter, SubjectTeacher, Batch
 from .models_recordings import SessionRecording
 from .models import Board
 
@@ -62,9 +64,9 @@ class SubjectAdmin(admin.ModelAdmin):
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)
-        return qs.select_related("course__board")   # ✅ FIXED
+        return qs.select_related("course__board")
 
-    def get_teachers(self, obj):   # ✅ RESTORED
+    def get_teachers(self, obj):
         subject_teachers = obj.subject_teachers.select_related("teacher")
         return ", ".join([st.teacher.email for st in subject_teachers])
 
@@ -77,9 +79,12 @@ class SubjectAdmin(admin.ModelAdmin):
 
 @admin.register(Chapter)
 class ChapterAdmin(admin.ModelAdmin):
-    list_display = ("title", "subject", "get_course", "get_board", "order")
+    # is_covered is editable right in the list for quick ticking.
+    list_display = ("title", "subject", "get_course", "get_board", "order", "is_covered")
+    list_editable = ("is_covered",)
 
     list_filter = (
+        "is_covered",
         "subject__course__board",
         "subject__course",
         "subject",
@@ -95,6 +100,7 @@ class ChapterAdmin(admin.ModelAdmin):
     ordering = ("subject__course", "subject", "order")
 
     autocomplete_fields = ["subject"]
+    readonly_fields = ("covered_at", "marked_by")
 
     def get_course(self, obj):
         return obj.subject.course
@@ -108,6 +114,19 @@ class ChapterAdmin(admin.ModelAdmin):
     def get_queryset(self, request):
         qs = super().get_queryset(request)
         return qs.select_related("subject__course__board")
+
+    def save_model(self, request, obj, form, change):
+        # Stamp covered_at / marked_by when ticked from the change form.
+        # (Bulk ticks via the list view set is_covered only; covered_at is
+        # informational and progress uses is_covered, so that's fine.)
+        if "is_covered" in form.changed_data:
+            if obj.is_covered:
+                obj.covered_at = obj.covered_at or timezone.now()
+                obj.marked_by = request.user
+            else:
+                obj.covered_at = None
+                obj.marked_by = None
+        super().save_model(request, obj, form, change)
 
 # =========================
 # SESSION RECORDING ADMIN
@@ -146,3 +165,29 @@ class BoardAdmin(admin.ModelAdmin):
 @admin.register(Stream)
 class StreamAdmin(admin.ModelAdmin):
     search_fields = ["name"]
+
+
+# =========================
+# BATCH ADMIN
+# =========================
+
+
+@admin.register(Batch)
+class BatchAdmin(admin.ModelAdmin):
+    list_display = ("name", "code", "course", "year", "is_active", "seats_taken", "capacity")
+    list_filter = ("is_active", "year", "course__board", "course")
+    search_fields = ("name", "code", "course__title")
+    autocomplete_fields = ["course"]
+    ordering = ("-year", "code")
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request).select_related("course")
+        return qs.annotate(
+            _seats=Count("enrollments", filter=Q(enrollments__status="ACTIVE"))
+        )
+
+    def seats_taken(self, obj):
+        return obj._seats
+
+    seats_taken.short_description = "Seats taken"
+    seats_taken.admin_order_field = "_seats"

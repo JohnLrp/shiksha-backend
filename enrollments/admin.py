@@ -1,12 +1,31 @@
 from django.contrib import admin
-from .models import Enrollment, Subscription
+from .models import Enrollment, Subscription, EnrollmentRequest
+
+
+@admin.register(EnrollmentRequest)
+class EnrollmentRequestAdmin(admin.ModelAdmin):
+    list_display = (
+        "user",
+        "course",
+        "status",
+        "amount_paid",
+        "payment_method",
+        "submitted_at",
+        "reviewed_at",
+    )
+    list_filter = ("status", "payment_method", "submitted_at")
+    search_fields = ("user__email", "course__title", "utr_number")
+    autocomplete_fields = ("user", "course", "reviewed_by")
+    readonly_fields = ("submitted_at",)
+    ordering = ("-submitted_at",)
 
 
 @admin.register(Enrollment)
 class EnrollmentAdmin(admin.ModelAdmin):
-    list_display = ("user", "course", "status", "enrolled_at")
-    list_filter = ("status", "enrolled_at")
-    search_fields = ("user__email", "course__title")
+    list_display = ("user", "course", "batch", "status", "enrolled_at")
+    list_filter = ("status", "batch", "enrolled_at")
+    search_fields = ("user__email", "course__title", "batch__code", "batch__name")
+    autocomplete_fields = ("user", "course", "batch")
 
 
 @admin.register(Subscription)
