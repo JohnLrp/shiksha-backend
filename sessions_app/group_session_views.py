@@ -62,12 +62,32 @@ def _gs_qs():
 
 
 def _can_view(session, user):
-    """A session is visible to host, invited teacher, or any invitee."""
+    """A session is visible to host, invited teacher, or any invitee.
+
+    Instant meetings (session_type='instant') are visible to any
+    authenticated user — possession of the short_code / share link is
+    the gate, mirroring Google Meet. This lets students, teachers, and
+    admins who paste the URL load the session detail and walk into
+    the live room without being pre-invited.
+    """
     if session.host_id == user.id:
         return True
     if session.invited_teacher_id and session.invited_teacher_id == user.id:
         return True
+    if getattr(session, "session_type", "") == "instant":
+        return True
     return session.invites.filter(user=user).exists()
+
+
+# ---------------------------------------------------------------------------
+# Capacity caps
+# ---------------------------------------------------------------------------
+# Hard ceiling on concurrent participants in an instant room. Counted from
+# ``active_connections`` (incremented on WebSocket connect in consumers.py).
+# The host is exempt so the room creator can always rejoin their own room.
+# Scheduled group sessions are capped via ``GroupSession.max_invitees``
+# (also 50 by default) at invite-add time, so no second cap is needed there.
+INSTANT_MAX_PARTICIPANTS = 50
 
 
 def _scheduled_aware_dt(session):
@@ -977,6 +997,20 @@ def join_group_session(request, session_id):
             status=403,
         )
 
+    # Capacity cap for instant rooms.
+    # ``active_connections`` is incremented in consumers.py on WS connect and
+    # decremented on disconnect, so it reflects the current live headcount.
+    # The host is exempt — the room creator can always rejoin their own room
+    # even if it's "full".
+    if is_instant and not is_host:
+        if (session.active_connections or 0) >= INSTANT_MAX_PARTICIPANTS:
+            return Response(
+                {"error": f"This instant meeting is full "
+                          f"({INSTANT_MAX_PARTICIPANTS} participants max). "
+                          f"Please try again once someone leaves."},
+                status=http_status.HTTP_403_FORBIDDEN,
+            )
+
     # Early terminal states
     if session.status in ("cancelled", "completed", "expired"):
         return Response(
@@ -1097,10 +1131,14 @@ def join_group_session(request, session_id):
 def _chat_participant_check(session, user):
     """
     Return (allowed, error_response_or_None).
-    A user may chat in a group-session room iff they are the host or have
-    an 'accepted' invite for this session.
+    A user may chat in a group-session room iff:
+      * they are the host, OR
+      * they have an 'accepted' invite, OR
+      * it's an instant meeting (anyone with the link is a participant).
     """
     if session.host_id == user.id:
+        return True, None
+    if getattr(session, "session_type", "") == "instant":
         return True, None
     invite = session.invites.filter(user=user).first()
     if invite and invite.status == "accepted":
