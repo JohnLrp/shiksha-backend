@@ -6,12 +6,13 @@ from rest_framework.parsers import MultiPartParser, FormParser
 
 from accounts.permissions import IsAdmin
 
-from .models import EnrollmentRequest
+from .models import EnrollmentRequest, Enrollment
 from .serializers import (
     EnrollmentRequestCreateSerializer,
     MyEnrollmentRequestSerializer,
     AdminEnrollmentRequestListSerializer,
     AdminActionSerializer,
+    BatchStudentSerializer,
 )
 
 
@@ -88,9 +89,62 @@ class AdminEnrollmentRequestActionView(APIView):
         except EnrollmentRequest.DoesNotExist:
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        serializer = AdminActionSerializer(data=request.data)
+        # Pass request_obj so the serializer can validate batch ↔ course + capacity.
+        serializer = AdminActionSerializer(
+            data=request.data,
+            context={"request": request, "request_obj": req},
+        )
         serializer.is_valid(raise_exception=True)
         serializer.save(request_obj=req, reviewer=request.user)
 
         out = AdminEnrollmentRequestListSerializer(req, context={"request": request})
         return Response(out.data)
+
+
+class AdminBatchRosterView(APIView):
+    """List enrolled students, filterable by batch / course / status.
+
+    Query params:
+      - batch:   Batch UUID (exact)
+      - code:    Batch code, e.g. "A13" (case-insensitive)
+      - course:  Course UUID
+      - status:  ACTIVE (default) / REVOKED
+    """
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def get(self, request):
+        qs = (
+            Enrollment.objects
+            .select_related("user", "user__profile", "course", "batch")
+            .order_by("batch__code", "user__email")
+        )
+
+        batch_id = request.query_params.get("batch")
+        code = request.query_params.get("code", "").strip()
+        course_id = request.query_params.get("course")
+        status_filter = request.query_params.get("status", Enrollment.STATUS_ACTIVE).strip().upper()
+
+        if batch_id:
+            qs = qs.filter(batch_id=batch_id)
+        if code:
+            qs = qs.filter(batch__code__iexact=code.replace(" ", ""))
+        if course_id:
+            qs = qs.filter(course_id=course_id)
+        if status_filter in (Enrollment.STATUS_ACTIVE, Enrollment.STATUS_REVOKED):
+            qs = qs.filter(status=status_filter)
+
+        try:
+            page = max(1, int(request.query_params.get("page", 1)))
+        except (TypeError, ValueError):
+            page = 1
+        try:
+            page_size = min(200, max(1, int(request.query_params.get("page_size", 50))))
+        except (TypeError, ValueError):
+            page_size = 50
+
+        count = qs.count()
+        start = (page - 1) * page_size
+        results = qs[start:start + page_size]
+
+        serializer = BatchStudentSerializer(results, many=True, context={"request": request})
+        return Response({"count": count, "results": serializer.data})

@@ -3,6 +3,12 @@ from .models import Chapter
 from rest_framework import serializers
 from .models import Subject, Course, Board
 
+# The "published & ready" recording status. Pull it from the model if it
+# defines a named constant; otherwise fall back to the historical literal (4).
+# Replace this with the real constant name once you confirm it on
+# SessionRecording (e.g. SessionRecording.STATUS_READY).
+PUBLISHED_RECORDING_STATUS = getattr(SessionRecording, "STATUS_READY", 4)
+
 
 class SubjectSerializer(serializers.ModelSerializer):
     teachers = serializers.SerializerMethodField()
@@ -76,7 +82,27 @@ class SubjectSerializer(serializers.ModelSerializer):
         }
 
     def get_recordings_count(self, obj):
-        return obj.recordings.filter(is_published=True, status=4).count()
+        # Prefer a value annotated on the queryset by the view (no extra query).
+        # In the view that lists subjects, annotate like:
+        #
+        #   from django.db.models import Count, Q
+        #   from .serializers import PUBLISHED_RECORDING_STATUS
+        #
+        #   Subject.objects.annotate(
+        #       published_recordings_count=Count(
+        #           "recordings",
+        #           filter=Q(recordings__is_published=True,
+        #                    recordings__status=PUBLISHED_RECORDING_STATUS),
+        #       )
+        #   )
+        annotated = getattr(obj, "published_recordings_count", None)
+        if annotated is not None:
+            return annotated
+
+        # Fallback: one COUNT per subject (kept for safety / non-list usage).
+        return obj.recordings.filter(
+            is_published=True, status=PUBLISHED_RECORDING_STATUS
+        ).count()
 
 
 class BoardSerializer(serializers.ModelSerializer):

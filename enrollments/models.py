@@ -104,6 +104,18 @@ class Enrollment(models.Model):
         related_name="enrollments",
     )
 
+    # NEW: structured batch assignment.
+    batch = models.ForeignKey(
+        "courses.Batch",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="enrollments",
+    )
+
+    # LEGACY: kept only so the data migration can backfill `batch`.
+    # Delete this field (and run a migration) once 0003 has run and you've
+    # confirmed every row has a `batch` set where it should.
     batch_code = models.CharField(max_length=30, null=True, blank=True)
 
     status = models.CharField(
@@ -119,6 +131,7 @@ class Enrollment(models.Model):
         indexes = [
             models.Index(fields=["user", "course"]),
             models.Index(fields=["status"]),
+            models.Index(fields=["batch", "status"]),  # "active students in A13"
         ]
 
     def __str__(self):
