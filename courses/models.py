@@ -87,7 +87,7 @@ class Subject(models.Model):
         ]
 
     def __str__(self):
-        return f"{self.course} → {self.name}"   # ✅ improved
+        return f"{self.course} → {self.name}"
 
 
 class Chapter(models.Model):
@@ -103,6 +103,23 @@ class Chapter(models.Model):
     order = models.PositiveIntegerField(default=0)
 
     created_at = models.DateTimeField(auto_now_add=True)
+
+    # --- Teacher-driven coverage (one shared state per course) ---
+    # A teacher ticks this once the chapter has been taught. Every enrolled
+    # student sees the same value, including students who join later.
+    is_covered = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text="Marked by a teacher once this chapter has been taught.",
+    )
+    covered_at = models.DateTimeField(null=True, blank=True)
+    marked_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="marked_chapters",
+    )
 
     class Meta:
         ordering = ["order"]
@@ -228,3 +245,72 @@ class Stream(models.Model):
 
     def __str__(self):
         return self.name
+
+
+# ---------------------------------------------------------------------------
+# NEW: Batch / cohort
+#
+# Promotes the old free-text Enrollment.batch_code into a real, queryable
+# entity. A batch belongs to one course (e.g. "Batch 2026", "A13", "A15").
+# Filtering, counting and capacity all become trivial and consistent.
+# ---------------------------------------------------------------------------
+class Batch(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    course = models.ForeignKey(
+        Course,
+        on_delete=models.CASCADE,
+        related_name="batches",
+    )
+
+    # Human-readable label shown in dashboards: "Batch 2026", "Morning A13"
+    name = models.CharField(max_length=100)
+
+    # Short operational code, unique within a course: "A13", "A15", "2026"
+    code = models.CharField(max_length=20)
+
+    # Academic session year, e.g. 2025 / 2026. Optional but handy for filtering.
+    year = models.PositiveIntegerField(null=True, blank=True)
+
+    start_date = models.DateField(null=True, blank=True)
+    end_date = models.DateField(null=True, blank=True)
+
+    capacity = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="Max active students; leave blank for unlimited.",
+    )
+
+    is_active = models.BooleanField(
+        default=True,
+        help_text="Inactive batches are hidden from new enrollments.",
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-year", "code"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["course", "code"],
+                name="unique_batch_code_per_course",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["course", "is_active"]),
+            models.Index(fields=["year"]),
+        ]
+
+    def __str__(self):
+        return f"{self.course.title} — {self.name} ({self.code})"
+
+    @property
+    def seats_taken(self):
+        # "ACTIVE" mirrors Enrollment.STATUS_ACTIVE (kept as a literal to avoid
+        # a cross-app import at module load time).
+        return self.enrollments.filter(status="ACTIVE").count()
+
+    @property
+    def is_full(self):
+        return self.capacity is not None and self.seats_taken >= self.capacity

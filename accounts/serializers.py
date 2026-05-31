@@ -591,6 +591,29 @@ class ChangePasswordSerializer(serializers.Serializer):
 
 
 # =====================================================
+# PASSWORD RESET SERIALIZERS
+# =====================================================
+
+class PasswordResetRequestSerializer(serializers.Serializer):
+    email = serializers.EmailField(required=True)
+
+
+class PasswordResetVerifySerializer(serializers.Serializer):
+    email = serializers.EmailField(required=True)
+    code = serializers.CharField(required=True, min_length=6, max_length=6)
+
+
+class PasswordResetConfirmSerializer(serializers.Serializer):
+    email = serializers.EmailField(required=True)
+    ticket = serializers.UUIDField(required=True)
+    new_password = serializers.CharField(required=True)
+
+    def validate_new_password(self, value):
+        validate_password(value)
+        return value
+
+
+# =====================================================
 # ADMIN SERIALIZERS
 # =====================================================
 

@@ -7,7 +7,7 @@ from django.utils import timezone
 from django.db import transaction
 
 from accounts.email_utils import send_gmail
-from courses.models import Course
+from courses.models import Course, Batch
 
 from .models import Enrollment, EnrollmentRequest, Subscription
 
@@ -118,6 +118,45 @@ class CourseBriefSerializer(serializers.ModelSerializer):
         fields = ("id", "title", "price")
 
 
+class BatchBriefSerializer(serializers.ModelSerializer):
+    seats_taken = serializers.IntegerField(read_only=True)
+    is_full = serializers.BooleanField(read_only=True)
+
+    class Meta:
+        model = Batch
+        fields = ("id", "name", "code", "year", "capacity", "seats_taken", "is_full")
+
+
+class BatchStudentSerializer(serializers.ModelSerializer):
+    """One row per enrolled student, for the admin batch-roster view."""
+    user_email = serializers.EmailField(source="user.email", read_only=True)
+    user_name = serializers.SerializerMethodField()
+    course_title = serializers.CharField(source="course.title", read_only=True)
+    batch = BatchBriefSerializer(read_only=True)
+
+    class Meta:
+        model = Enrollment
+        fields = (
+            "id",
+            "user_email",
+            "user_name",
+            "course_title",
+            "batch",
+            "status",
+            "enrolled_at",
+        )
+
+    def get_user_name(self, obj):
+        profile = getattr(obj.user, "profile", None)
+        if profile:
+            full = f"{profile.first_name} {profile.last_name}".strip()
+            if full:
+                return full
+            if getattr(profile, "full_name", ""):
+                return profile.full_name
+        return obj.user.username or obj.user.email
+
+
 # -------- Student-facing --------
 
 class EnrollmentRequestCreateSerializer(serializers.ModelSerializer):
@@ -216,10 +255,34 @@ class AdminActionSerializer(serializers.Serializer):
 
     action = serializers.ChoiceField(choices=ACTION_CHOICES)
     admin_note = serializers.CharField(required=False, allow_blank=True)
+    # Optional: assign the student to a batch at approval time.
+    batch = serializers.PrimaryKeyRelatedField(
+        queryset=Batch.objects.all(),
+        required=False,
+        allow_null=True,
+    )
+
+    def validate(self, attrs):
+        # Cross-field checks that need the target request object.
+        request_obj = self.context.get("request_obj")
+        action = attrs.get("action")
+        batch = attrs.get("batch")
+
+        if action == "approve" and batch is not None and request_obj is not None:
+            if batch.course_id != request_obj.course_id:
+                raise serializers.ValidationError(
+                    {"batch": "This batch does not belong to the requested course."}
+                )
+            if batch.is_full:
+                raise serializers.ValidationError(
+                    {"batch": "The selected batch is full."}
+                )
+        return attrs
 
     def save(self, *, request_obj, reviewer):
         action = self.validated_data["action"]
         note = self.validated_data.get("admin_note", "")
+        batch = self.validated_data.get("batch")
 
         if request_obj.status != EnrollmentRequest.STATUS_PENDING:
             raise serializers.ValidationError("This request has already been reviewed.")
@@ -231,11 +294,28 @@ class AdminActionSerializer(serializers.Serializer):
 
             if action == "approve":
                 request_obj.status = EnrollmentRequest.STATUS_APPROVED
-                Enrollment.objects.get_or_create(
+
+                enrollment, created = Enrollment.objects.get_or_create(
                     user=request_obj.user,
                     course=request_obj.course,
-                    defaults={"status": Enrollment.STATUS_ACTIVE},
+                    defaults={
+                        "status": Enrollment.STATUS_ACTIVE,
+                        "batch": batch,
+                    },
                 )
+
+                # Re-approval / re-activation path: make sure status is ACTIVE
+                # and apply the batch if the admin chose one.
+                fields_to_update = []
+                if enrollment.status != Enrollment.STATUS_ACTIVE:
+                    enrollment.status = Enrollment.STATUS_ACTIVE
+                    fields_to_update.append("status")
+                if batch is not None and enrollment.batch_id != batch.id:
+                    enrollment.batch = batch
+                    fields_to_update.append("batch")
+                if not created and fields_to_update:
+                    enrollment.save(update_fields=fields_to_update)
+
                 _grant_subscription(request_obj)
             else:
                 request_obj.status = EnrollmentRequest.STATUS_REJECTED
