@@ -29,6 +29,7 @@ from accounts.models import (
     AuthEvent,
     User,
     EmailVerificationToken,
+    PasswordResetToken,
     Role,
     UserRole,
 )
@@ -37,6 +38,8 @@ from accounts.throttles import (
     LoginRateThrottle,
     ResendVerificationRateThrottle,
     SignupRateThrottle,
+    PasswordResetRequestRateThrottle,
+    PasswordResetVerifyRateThrottle,
 )
 
 from .serializers import (
@@ -46,6 +49,9 @@ from .serializers import (
     TeacherFormFillupSerializer,
     TeacherListSerializer,
     ChangePasswordSerializer,
+    PasswordResetRequestSerializer,
+    PasswordResetVerifySerializer,
+    PasswordResetConfirmSerializer,
     AdminUserListSerializer,
     AdminUserDetailSerializer,
     AdminUserUpdateSerializer,
@@ -1271,3 +1277,148 @@ class AdminTeacherApprovalActionView(APIView):
         else:
             role.delete()
             return Response({"detail": "Teacher request rejected."})
+
+
+# =====================================================
+# FORGOT PASSWORD — REQUEST OTP
+# =====================================================
+
+class PasswordResetRequestView(APIView):
+    permission_classes = [AllowAny]
+    throttle_classes = [PasswordResetRequestRateThrottle]
+
+    GENERIC_OK = {
+        "detail": "If an account with that email exists, a verification code has been sent."
+    }
+
+    def post(self, request):
+        serializer = PasswordResetRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        email = serializer.validated_data["email"].strip().lower()
+
+        user = User.objects.filter(email__iexact=email).first()
+        if not user or not user.is_active:
+            return Response(self.GENERIC_OK)
+
+        PasswordResetToken.objects.filter(user=user, used_at__isnull=True).delete()
+        token, code = PasswordResetToken.generate(user)
+
+        html = f"""
+        <h2>Reset your password</h2>
+        <p>Use the verification code below to reset your password. It expires in {PasswordResetToken.OTP_TTL_MINUTES} minutes.</p>
+        <p style="font-size:28px;letter-spacing:6px;font-weight:bold;padding:12px 18px;background:#f1f5f9;display:inline-block;border-radius:6px;">{code}</p>
+        <p>If you did not request a password reset, you can ignore this email.</p>
+        """
+        text = (
+            f"Your password reset code is: {code}\n"
+            f"It expires in {PasswordResetToken.OTP_TTL_MINUTES} minutes.\n"
+            f"If you did not request a password reset, you can ignore this email."
+        )
+
+        try:
+            send_gmail(
+                to=user.email,
+                subject="Your password reset code",
+                message_text=text,
+                html=html,
+            )
+        except Exception as e:
+            logger.error(f"Failed to send password reset code to {user.email}: {e}")
+
+        return Response(self.GENERIC_OK)
+
+
+# =====================================================
+# FORGOT PASSWORD — VERIFY OTP
+# =====================================================
+
+class PasswordResetVerifyView(APIView):
+    permission_classes = [AllowAny]
+    throttle_classes = [PasswordResetVerifyRateThrottle]
+
+    def post(self, request):
+        serializer = PasswordResetVerifySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        email = serializer.validated_data["email"].strip().lower()
+        code = serializer.validated_data["code"].strip()
+
+        user = User.objects.filter(email__iexact=email).first()
+        if not user:
+            raise ValidationError({"detail": "Invalid or expired code."})
+
+        token = (
+            PasswordResetToken.objects
+            .filter(user=user, used_at__isnull=True)
+            .order_by("-created_at")
+            .first()
+        )
+
+        if not token or token.is_expired():
+            raise ValidationError({"detail": "Invalid or expired code."})
+
+        if token.attempts >= PasswordResetToken.MAX_ATTEMPTS:
+            raise ValidationError({"detail": "Too many invalid attempts. Please request a new code."})
+
+        if not token.code_is_valid(code):
+            token.attempts += 1
+            token.save(update_fields=["attempts"])
+            raise ValidationError({"detail": "Invalid or expired code."})
+
+        ticket = token.issue_ticket()
+        return Response({
+            "ticket": str(ticket),
+            "expires_in_minutes": PasswordResetToken.TICKET_TTL_MINUTES,
+        })
+
+
+# =====================================================
+# FORGOT PASSWORD — CONFIRM (SET NEW PASSWORD)
+# =====================================================
+
+class PasswordResetConfirmView(APIView):
+    permission_classes = [AllowAny]
+    throttle_classes = [PasswordResetVerifyRateThrottle]
+
+    def post(self, request):
+        serializer = PasswordResetConfirmSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        email = serializer.validated_data["email"].strip().lower()
+        ticket = serializer.validated_data["ticket"]
+        new_password = serializer.validated_data["new_password"]
+
+        user = User.objects.filter(email__iexact=email).first()
+        if not user:
+            raise ValidationError({"detail": "Invalid or expired reset session."})
+
+        token = (
+            PasswordResetToken.objects
+            .filter(user=user, used_at__isnull=True)
+            .order_by("-created_at")
+            .first()
+        )
+
+        if not token or not token.ticket_is_valid(ticket):
+            raise ValidationError({"detail": "Invalid or expired reset session."})
+
+        with transaction.atomic():
+            user.set_password(new_password)
+            user.save(update_fields=["password"])
+            token.used_at = timezone.now()
+            token.save(update_fields=["used_at"])
+            PasswordResetToken.objects.filter(user=user, used_at__isnull=True).delete()
+
+        html = """
+        <h2>Your password has been changed</h2>
+        <p>Your Shiksha account password was just changed. If this wasn't you, please reset your password again immediately and contact support.</p>
+        """
+        try:
+            send_gmail(
+                to=user.email,
+                subject="Your password has been changed",
+                message_text="Your Shiksha account password was just changed. If this wasn't you, please reset it again immediately and contact support.",
+                html=html,
+            )
+        except Exception as e:
+            logger.error(f"Failed to send password change notification to {user.email}: {e}")
+
+        return Response({"detail": "Your password has been changed."})

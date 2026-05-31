@@ -11,3 +11,11 @@ class SignupRateThrottle(AnonRateThrottle):
 
 class ResendVerificationRateThrottle(UserRateThrottle):
     scope = "resend_verification"
+
+
+class PasswordResetRequestRateThrottle(AnonRateThrottle):
+    scope = "password_reset_request"
+
+
+class PasswordResetVerifyRateThrottle(AnonRateThrottle):
+    scope = "password_reset_verify"

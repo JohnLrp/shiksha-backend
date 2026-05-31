@@ -418,6 +418,74 @@ class EmailVerificationToken(models.Model):
 
 
 # =====================================================
+# PASSWORD RESET TOKEN (OTP-based)
+# =====================================================
+
+class PasswordResetToken(models.Model):
+    OTP_TTL_MINUTES = 15
+    TICKET_TTL_MINUTES = 10
+    MAX_ATTEMPTS = 5
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="password_reset_tokens",
+    )
+
+    code_hash = models.CharField(max_length=128)
+    attempts = models.PositiveSmallIntegerField(default=0)
+
+    ticket = models.UUIDField(null=True, blank=True, unique=True)
+    ticket_expires_at = models.DateTimeField(null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    used_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["user", "-created_at"]),
+            models.Index(fields=["ticket"]),
+        ]
+
+    @classmethod
+    def generate(cls, user):
+        import secrets
+        from django.contrib.auth.hashers import make_password
+
+        code = f"{secrets.randbelow(1000000):06d}"
+        token = cls.objects.create(
+            user=user,
+            code_hash=make_password(code),
+            expires_at=timezone.now() + timedelta(minutes=cls.OTP_TTL_MINUTES),
+        )
+        return token, code
+
+    def code_is_valid(self, raw_code):
+        from django.contrib.auth.hashers import check_password
+        return check_password(raw_code, self.code_hash)
+
+    def is_expired(self):
+        return timezone.now() > self.expires_at
+
+    def issue_ticket(self):
+        self.ticket = uuid.uuid4()
+        self.ticket_expires_at = timezone.now() + timedelta(minutes=self.TICKET_TTL_MINUTES)
+        self.save(update_fields=["ticket", "ticket_expires_at"])
+        return self.ticket
+
+    def ticket_is_valid(self, raw_ticket):
+        if not self.ticket or not self.ticket_expires_at:
+            return False
+        if str(self.ticket) != str(raw_ticket):
+            return False
+        return timezone.now() <= self.ticket_expires_at
+
+    def __str__(self):
+        return f"PasswordResetToken for {self.user.email}"
+
+
+# =====================================================
 # TEACHER PROFILE
 # =====================================================
 
