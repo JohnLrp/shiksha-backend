@@ -16,6 +16,9 @@ from .views import (
     TeacherPublicProfileView,
     ValidateStudentIdView,
     ChangePasswordView,
+    PasswordResetRequestView,
+    PasswordResetVerifyView,
+    PasswordResetConfirmView,
     AdminStatsView,
     AdminUserListView,
     AdminUserDetailView,
@@ -35,6 +38,11 @@ urlpatterns = [
     path("teacher/profile/", TeacherProfileView.as_view()),
     path("student/profile/", StudentProfileView.as_view()),
     path("change-password/", ChangePasswordView.as_view()),
+
+    # --- Forgot password (OTP flow) ---
+    path("password-reset/request/", PasswordResetRequestView.as_view()),
+    path("password-reset/verify/", PasswordResetVerifyView.as_view()),
+    path("password-reset/confirm/", PasswordResetConfirmView.as_view()),
 
     # --- Location data ---
     path("states/", StatesListView.as_view()),
